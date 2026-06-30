@@ -10,15 +10,12 @@ This operator follows the [ODH modular architecture](https://docs.google.com/doc
 graph TD
     Platform["ODH Platform Operator"]
     CR["MCPLifecycleOperator CR (default)"]
-    CM["Platform ConfigMap"]
     Module["MCP Lifecycle Module Operator<br/><i>(this repo)</i>"]
     Operand["MCP Lifecycle Operator<br/><i>(operand)</i>"]
     MCPServer["MCPServer Resources"]
 
     Platform -->|creates| CR
-    Platform -->|creates| CM
     CR -->|watched by| Module
-    CM -->|provides image + namespace| Module
     Module -->|deploys via SSA| Operand
     Operand -->|manages| MCPServer
 ```
@@ -27,7 +24,7 @@ graph TD
 
 - **Module operator** (this repo) - manages the lifecycle of the operand; deployed by the ODH platform.
 - **Operand** - the MCP Lifecycle Operator itself, deployed by this module operator.
-- **Platform ConfigMap** (`opendatahub-mcplifecycleoperator-config`) - delivers the operand image reference and target namespace from the platform. See [v2 of the Onboarding Guide](https://docs.google.com/document/d/1FgN_U-6XH8M-Mu6XNeldUlTPsnw7UyPCWg5NVJJdYnw) for details on this pattern.
+- **Platform configuration** - the operand image reference and target namespace are provided via environment variables (`RELATED_IMAGE_*`, `SYSTEM_NAMESPACE`) injected by the platform into the module operator's pod spec.
 
 ## Reconciliation Flow
 
@@ -36,8 +33,7 @@ flowchart TD
     Start([Reconcile]) --> CheckState{managementState?}
     CheckState -->|Removed| Delete[Delete all owned resources]
     Delete --> Done([Done])
-    CheckState -->|Managed| ReadCM[Read platform ConfigMap]
-    ReadCM --> Render[Render operand manifests]
+    CheckState -->|Managed| Render[Render operand manifests]
     Render --> Apply[Apply resources via SSA]
     Apply --> GC[Garbage-collect stale resources]
     GC --> CheckDeploy{Deployments ready?}
@@ -101,7 +97,7 @@ make undeploy
 | Field | Description |
 |---|---|
 | `spec.managementState` | `Managed` (deploy/reconcile the operand) or `Removed` (delete all operand resources) |
-| `status.phase` | `Ready` or `NotReady` |
+| `status.phase` | `Ready` or `Not Ready` |
 | `status.conditions` | Standard conditions: `Ready`, `ProvisioningSucceeded`, `Degraded`, `MCPLifecycleOperatorAvailable` |
 | `status.releases` | Reports the module operator version and repo URL |
 
