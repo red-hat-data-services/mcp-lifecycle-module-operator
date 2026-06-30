@@ -25,7 +25,7 @@ Before committing, test locally following the table below:
 
 - The `MCPLifecycleOperator` CR is **cluster-scoped** and its name must be `default` (enforced by CEL validation).
 - The CRD is at API version `v1alpha1`. Do not promote without explicit instruction.
-- Platform config (operand image, operand namespace) comes from the ConfigMap (`opendatahub-mcplifecycleoperator-config`), **not** the CR spec. Do not add platform-managed fields to `MCPLifecycleOperatorSpec`.
+- Platform config (operand image, operand namespace) comes from environment variables (`RELATED_IMAGE_*`, `SYSTEM_NAMESPACE`), **not** the CR spec. Do not add platform-managed fields to `MCPLifecycleOperatorSpec`.
 - Operand manifests are **vendored** at `internal/controller/resources/mcp-lifecycle-operator.yaml`. Do not edit by hand - use `make update-operand-manifests`.
 - All managed resources must carry the label `platform.opendatahub.io/part-of: mcplifecycleoperator`.
 

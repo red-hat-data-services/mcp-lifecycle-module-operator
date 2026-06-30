@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - [Kind](https://kind.sigs.k8s.io/) (for local E2E testing)
 - Docker or Podman
 - `kubectl`
@@ -39,10 +39,10 @@ make install
 make run
 ```
 
-The controller requires two environment variables: `POD_NAMESPACE` and `OPERATOR_VERSION`. When running locally, export them:
+The controller requires two environment variables: `SYSTEM_NAMESPACE` and `OPERATOR_VERSION`. When running locally, export them:
 
 ```bash
-export POD_NAMESPACE=mcp-lifecycle-module-operator-system
+export SYSTEM_NAMESPACE=mcp-lifecycle-module-operator-system
 export OPERATOR_VERSION=dev
 make run
 ```
@@ -56,7 +56,7 @@ make kind-create
 # Build and push to the local registry
 make docker-build docker-push IMAGE_REGISTRY=localhost:5001 IMAGE_TAG=dev
 
-# Deploy (includes the platform ConfigMap with default operand image)
+# Deploy
 make deploy IMAGE_REGISTRY=localhost:5001 IMAGE_TAG=dev
 
 # Apply the sample CR
@@ -108,10 +108,13 @@ make e2e-test
 
 ## CI
 
-Two GitHub Actions workflows run on this repository:
+GitHub Actions workflows run on this repository:
 
 - **E2E Tests** (`.github/workflows/e2e.yml`) - runs on PRs and pushes to `main`. Stands up a Kind cluster, deploys the operator, and runs E2E tests.
+- **Verify** (`.github/workflows/verify.yml`) - runs on PRs. Checks formatting, linting, and codegen freshness.
 - **Update Operand Manifests** (`.github/workflows/update-operand-manifests.yml`) - weekly cron and manual dispatch. Re-vendors operand manifests and opens a PR if they changed.
+
+Additionally, Tekton PipelineRuns in `.tekton/` handle Konflux/Red Hat builds for pull requests and pushes.
 
 ## AI Agents
 
