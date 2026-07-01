@@ -57,15 +57,10 @@ vendor: ## Tidy and vendor Go dependencies.
 	go mod tidy
 	go mod vendor
 
-.PHONY: compiled-manifests
-compiled-manifests: manifests kustomize ## Build compiled deployment manifests into config/manifests/.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/default > config/manifests/mcp-lifecycle-module-operator.yaml
-
 .PHONY: verify
-verify: manifests generate fmt vendor compiled-manifests ## Verify generated code, formatting, and vendored dependencies are up-to-date.
+verify: manifests generate fmt vendor ## Verify generated code, formatting, and vendored dependencies are up-to-date.
 	@if [ -n "$$(git status --porcelain)" ]; then \
-		echo "ERROR: generated files are out of date. Run 'make manifests generate fmt vendor compiled-manifests' and commit the result."; \
+		echo "ERROR: generated files are out of date. Run 'make manifests generate fmt vendor' and commit the result."; \
 		git status --porcelain; \
 		git diff; \
 		exit 1; \
@@ -141,6 +136,11 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster.
 update-operand-manifests: ## Vendor MCPLO manifests.
 	$(eval TMP := $(shell mktemp -d))
 	git clone --depth 1 --branch "$(MCPLO_REF)" "$(MCPLO_REPO)" "$(TMP)"
+	# For productization, we need to have the full kustomize ready manifests from MCPLO
+	rm -rf config/manifests/mcp-lifecycle-operator
+	mkdir -p config/manifests/mcp-lifecycle-operator
+	cp -r "$(TMP)/config/." config/manifests/mcp-lifecycle-operator/
+	# Update MCPLO manifests
 	$(MAKE) -C "$(TMP)" -f Makefile-ocp.mk build-installer
 	cp "$(TMP)/dist/install.yaml" internal/controller/resources/mcp-lifecycle-operator.yaml
 	rm -rf "$(TMP)"

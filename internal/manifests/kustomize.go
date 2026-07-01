@@ -69,6 +69,7 @@ func (p *KustomizeProvider) Manifests(_ context.Context, params Params) ([]unstr
 		}),
 		manifestival.InjectNamespace(targetNS),
 		replaceImage(params.OperandImage),
+		injectTLSEnvVars(params.TLSMinVersion, params.TLSCipherSuites),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("transforming manifests: %w", err)
@@ -114,6 +115,73 @@ func injectLabels(labels map[string]string) manifestival.Transformer {
 		u.SetLabels(existing)
 		return nil
 	}
+}
+
+const (
+	envTLSMinVersion   = "TLS_MIN_VERSION"
+	envTLSCipherSuites = "TLS_CIPHER_SUITES"
+)
+
+func injectTLSEnvVars(minVersion, cipherSuites string) manifestival.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if minVersion == "" && cipherSuites == "" {
+			return nil
+		}
+		if u.GetKind() != "Deployment" {
+			return nil
+		}
+
+		containers, found, err := unstructured.NestedSlice(u.Object, "spec", "template", "spec", "containers")
+		if err != nil || !found {
+			return nil
+		}
+
+		injected := false
+		for i, c := range containers {
+			container, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if name, _, _ := unstructured.NestedString(container, "name"); name != "manager" {
+				continue
+			}
+
+			envSlice, _, _ := unstructured.NestedSlice(container, "env")
+			envSlice = setEnvVar(envSlice, envTLSMinVersion, minVersion)
+			envSlice = setEnvVar(envSlice, envTLSCipherSuites, cipherSuites)
+
+			if err := unstructured.SetNestedSlice(container, envSlice, "env"); err != nil {
+				return fmt.Errorf("deployment %q: setting TLS env vars: %w", u.GetName(), err)
+			}
+			containers[i] = container
+			injected = true
+		}
+
+		if !injected {
+			return fmt.Errorf("deployment %q has no container named %q to inject TLS env vars", u.GetName(), "manager")
+		}
+
+		return unstructured.SetNestedSlice(u.Object, containers, "spec", "template", "spec", "containers")
+	}
+}
+
+func setEnvVar(envSlice []interface{}, name, value string) []interface{} {
+	for i, e := range envSlice {
+		env, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if n, _, _ := unstructured.NestedString(env, "name"); n == name {
+			env["value"] = value
+			envSlice[i] = env
+			return envSlice
+		}
+	}
+
+	return append(envSlice, map[string]interface{}{
+		"name":  name,
+		"value": value,
+	})
 }
 
 func replaceImage(newImage string) manifestival.Transformer {
