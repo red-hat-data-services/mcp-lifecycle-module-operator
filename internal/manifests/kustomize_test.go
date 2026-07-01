@@ -210,3 +210,169 @@ func TestMissingOperandYAML(t *testing.T) {
 		t.Fatal("expected error for missing operand.yaml, got nil")
 	}
 }
+
+const testManifestWithEnvVars = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: mcp-lifecycle-operator-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: original:latest
+        env:
+        - name: GOMEMLIMIT
+          value: "120586240"
+`
+
+func TestInjectTLSEnvVars(t *testing.T) {
+	provider := NewKustomizeProvider(newTestFS(testManifestWithEnvVars))
+
+	resources, err := provider.Manifests(context.Background(), Params{
+		TLSMinVersion:   "VersionTLS12",
+		TLSCipherSuites: "TLS_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, obj := range resources {
+		if obj.GetKind() != "Deployment" {
+			continue
+		}
+		containers, _, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		for _, c := range containers {
+			container := c.(map[string]interface{})
+			if container["name"] != "manager" {
+				continue
+			}
+			envSlice, _, _ := unstructured.NestedSlice(container, "env")
+			envMap := make(map[string]string)
+			for _, e := range envSlice {
+				env := e.(map[string]interface{})
+				envMap[env["name"].(string)] = env["value"].(string)
+			}
+
+			if envMap["GOMEMLIMIT"] != "120586240" {
+				t.Error("existing GOMEMLIMIT env var was modified")
+			}
+			if envMap["TLS_MIN_VERSION"] != "VersionTLS12" {
+				t.Errorf("TLS_MIN_VERSION = %q, want %q", envMap["TLS_MIN_VERSION"], "VersionTLS12")
+			}
+			if envMap["TLS_CIPHER_SUITES"] != "TLS_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256" {
+				t.Errorf("TLS_CIPHER_SUITES = %q, want expected value", envMap["TLS_CIPHER_SUITES"])
+			}
+		}
+	}
+}
+
+func TestInjectTLSEnvVars_EmptyValues_SkipsInjection(t *testing.T) {
+	provider := NewKustomizeProvider(newTestFS(testManifestWithEnvVars))
+
+	resources, err := provider.Manifests(context.Background(), Params{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, obj := range resources {
+		if obj.GetKind() != "Deployment" {
+			continue
+		}
+		containers, _, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		for _, c := range containers {
+			container := c.(map[string]interface{})
+			if container["name"] != "manager" {
+				continue
+			}
+			envSlice, _, _ := unstructured.NestedSlice(container, "env")
+			for _, e := range envSlice {
+				env := e.(map[string]interface{})
+				name := env["name"].(string)
+				if name == "TLS_MIN_VERSION" || name == "TLS_CIPHER_SUITES" {
+					t.Errorf("TLS env var %q should not be present when values are empty", name)
+				}
+			}
+		}
+	}
+}
+
+func TestInjectTLSEnvVars_NoManagerContainer_ReturnsError(t *testing.T) {
+	manifest := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: mcp-lifecycle-operator-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: sidecar
+        image: sidecar:latest
+`
+	provider := NewKustomizeProvider(newTestFS(manifest))
+
+	_, err := provider.Manifests(context.Background(), Params{
+		TLSMinVersion:   "VersionTLS12",
+		TLSCipherSuites: "TLS_AES_128_GCM_SHA256",
+	})
+	if err == nil {
+		t.Fatal("expected error when no manager container exists")
+	}
+}
+
+func TestInjectTLSEnvVars_UpdatesExisting(t *testing.T) {
+	manifest := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: mcp-lifecycle-operator-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: original:latest
+        env:
+        - name: TLS_MIN_VERSION
+          value: "VersionTLS10"
+        - name: TLS_CIPHER_SUITES
+          value: "old-cipher"
+`
+	provider := NewKustomizeProvider(newTestFS(manifest))
+
+	resources, err := provider.Manifests(context.Background(), Params{
+		TLSMinVersion:   "VersionTLS13",
+		TLSCipherSuites: "TLS_AES_256_GCM_SHA384",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, obj := range resources {
+		if obj.GetKind() != "Deployment" {
+			continue
+		}
+		containers, _, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		for _, c := range containers {
+			container := c.(map[string]interface{})
+			if container["name"] != "manager" {
+				continue
+			}
+			envSlice, _, _ := unstructured.NestedSlice(container, "env")
+			envMap := make(map[string]string)
+			for _, e := range envSlice {
+				env := e.(map[string]interface{})
+				envMap[env["name"].(string)] = env["value"].(string)
+			}
+
+			if envMap["TLS_MIN_VERSION"] != "VersionTLS13" {
+				t.Errorf("TLS_MIN_VERSION = %q, want %q", envMap["TLS_MIN_VERSION"], "VersionTLS13")
+			}
+			if envMap["TLS_CIPHER_SUITES"] != "TLS_AES_256_GCM_SHA384" {
+				t.Errorf("TLS_CIPHER_SUITES = %q, want %q", envMap["TLS_CIPHER_SUITES"], "TLS_AES_256_GCM_SHA384")
+			}
+		}
+	}
+}

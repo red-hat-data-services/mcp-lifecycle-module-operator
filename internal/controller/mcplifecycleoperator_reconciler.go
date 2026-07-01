@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -85,6 +86,7 @@ const (
 // +kubebuilder:rbac:groups=mcp.x-k8s.io,resources=mcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
+// +kubebuilder:rbac:groups=config.openshift.io,resources=apiservers,verbs=get;list;watch
 // +kubebuilder:rbac:urls=/metrics,verbs=get
 
 func (r *MCPLifecycleOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -133,9 +135,20 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 		return r.handleRemoved(ctx, cr, cm)
 	}
 
+	tlsMinVersion, tlsCipherSuites, err := fetchTLSConfig(ctx, r.Client)
+	if err != nil {
+		cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
+			"TLSConfigFetchFailed", fmt.Sprintf("Failed to fetch TLS config: %v", err))
+		cm.AggregateReady()
+
+		return ctrl.Result{}, fmt.Errorf("fetching TLS config: %w", err)
+	}
+
 	desired, err := r.ManifestProvider.Manifests(ctx, manifests.Params{
 		OperandNamespace: r.PodNamespace,
 		OperandImage:     r.OperandImage,
+		TLSMinVersion:    tlsMinVersion,
+		TLSCipherSuites:  tlsCipherSuites,
 	})
 	if err != nil {
 		cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
@@ -321,7 +334,7 @@ func (r *MCPLifecycleOperatorReconciler) patchStatus(ctx context.Context, orig, 
 
 // SetupWithManager registers the controller with the manager.
 func (r *MCPLifecycleOperatorReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	toSingleton := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
+	enqueueComponentCR := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
 		return []reconcile.Request{
 			{NamespacedName: types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName}},
 		}
@@ -331,15 +344,20 @@ func (r *MCPLifecycleOperatorReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return obj.GetLabels()[odhLabels.PlatformPartOf] == v1alpha1.MCPLifecycleOperatorServiceName
 	})
 
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.MCPLifecycleOperator{}).
-		Watches(&appsv1.Deployment{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Watches(&corev1.ServiceAccount{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Watches(&corev1.Service{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.ClusterRole{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.ClusterRoleBinding{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.Role{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.RoleBinding{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Watches(&extv1.CustomResourceDefinition{}, toSingleton, builder.WithPredicates(managedPredicate)).
-		Complete(r)
+		Watches(&appsv1.Deployment{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&corev1.ServiceAccount{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&corev1.Service{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.ClusterRole{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.ClusterRoleBinding{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.Role{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.RoleBinding{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&extv1.CustomResourceDefinition{}, enqueueComponentCR, builder.WithPredicates(managedPredicate))
+
+	if isOpenShiftCluster(mgr) {
+		b = b.Watches(&configv1.APIServer{}, enqueueComponentCR)
+	}
+
+	return b.Complete(r)
 }

@@ -26,6 +26,8 @@ import (
 type Params struct {
 	OperandNamespace string
 	OperandImage     string
+	TLSMinVersion    string
+	TLSCipherSuites  string
 }
 
 // Provider abstracts how operand manifests are obtained and transformed.

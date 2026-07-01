@@ -177,6 +177,15 @@ github.com/opendatahub-io/odh-platform-utilities/pkg/deploy
 github.com/opendatahub-io/odh-platform-utilities/pkg/metadata/annotations
 github.com/opendatahub-io/odh-platform-utilities/pkg/metadata/labels
 github.com/opendatahub-io/odh-platform-utilities/pkg/resources
+# github.com/openshift/api v0.0.0-20260629123346-784126000268
+## explicit; go 1.25.0
+github.com/openshift/api/config/v1
+# github.com/openshift/controller-runtime-common v0.0.0-20260428152732-64ee174f5e2e
+## explicit; go 1.25.0
+github.com/openshift/controller-runtime-common/pkg/tls
+# github.com/openshift/library-go v0.0.0-20260630085645-45679084a74b
+## explicit; go 1.25.0
+github.com/openshift/library-go/pkg/crypto
 # github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 ## explicit
 github.com/pmezard/go-difflib/difflib
@@ -475,6 +484,9 @@ k8s.io/apimachinery/pkg/version
 k8s.io/apimachinery/pkg/watch
 k8s.io/apimachinery/third_party/forked/golang/json
 k8s.io/apimachinery/third_party/forked/golang/reflect
+# k8s.io/apiserver v0.36.2
+## explicit; go 1.26.0
+k8s.io/apiserver/pkg/authentication/user
 # k8s.io/client-go v0.36.2
 ## explicit; go 1.26.0
 k8s.io/client-go/applyconfigurations
