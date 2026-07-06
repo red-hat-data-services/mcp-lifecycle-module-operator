@@ -255,8 +255,8 @@ github.com/onsi/gomega v1.7.1/go.mod h1:XdKZgCCFLUoM/7CFJVPcG8C1xQ1AJ0vpAezJrB7J
 github.com/onsi/gomega v1.10.1/go.mod h1:iN09h71vgCQne3DLsj+A5owkum+a2tYe+TOCB1ybHNo=
 github.com/onsi/gomega v1.42.0 h1:CJby8u36xb7v34W78F8WKvqTQP7PCMIPB78IVDB73l4=
 github.com/onsi/gomega v1.42.0/go.mod h1:M/Uqpu/8qTjtzCLUA2zJHX9Iilrau25x1PdoSRbWh5A=
-github.com/opendatahub-io/odh-platform-utilities v0.1.0 h1:Y2HKslVy/C58VhFFCgyiK305LHVMQT3jXlmme6o0VzQ=
-github.com/opendatahub-io/odh-platform-utilities v0.1.0/go.mod h1:qArV52ZzbXEOivpKDr+Y84B+boaTEF5edkGW0d3cerA=
+github.com/opendatahub-io/odh-platform-utilities v0.2.0 h1:4qqIzw34eIxN6U94tzikmIq6SWBJBm7mbpKYaGADzjw=
+github.com/opendatahub-io/odh-platform-utilities v0.2.0/go.mod h1:U76jpNAMv6JO5HFRYTMcGfYObc3NF1IngxsIsgWAMj4=
 github.com/openshift/api v0.0.0-20260629123346-784126000268 h1:s2Z/n/ihnmPddz89PnLMkcOgjoe28VlkuDOMUu7y3uI=
 github.com/openshift/api v0.0.0-20260629123346-784126000268/go.mod h1:Jm45pE7O6/G0tYYhiLzNyZykTjmf9BfhsKYuGfLLwTE=
 github.com/openshift/controller-runtime-common v0.0.0-20260428152732-64ee174f5e2e h1:k89oIo2EjX0PRSdi1kesktCyWp50SC9WwKurvupvRGs=
