@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/manifestival/manifestival v0.7.2
 	github.com/onsi/ginkgo/v2 v2.32.0
-	github.com/onsi/gomega v1.42.0
+	github.com/onsi/gomega v1.42.1
 	github.com/opendatahub-io/odh-platform-utilities v0.2.0
 	github.com/openshift/api v0.0.0-20260629123346-784126000268
 	github.com/openshift/controller-runtime-common v0.0.0-20260428152732-64ee174f5e2e
