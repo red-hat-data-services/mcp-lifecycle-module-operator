@@ -208,8 +208,8 @@ github.com/k8s-manifest-kit/pkg v0.2.1-0.20260604145543-c4a39bd14f36 h1:jnOHg/sI
 github.com/k8s-manifest-kit/pkg v0.2.1-0.20260604145543-c4a39bd14f36/go.mod h1:BjftD87GS7SPirpKTu7aN1Zo4hFxuTmlHkbBoFP+TDg=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
-github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
-github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
+github.com/klauspost/compress v1.18.6 h1:2jupLlAwFm95+YDR+NwD2MEfFO9d4z4Prjl1XXDjuao=
+github.com/klauspost/compress v1.18.6/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
 github.com/kr/pretty v0.2.0/go.mod h1:ipq/a2n7PKx3OHsz4KJII5eveXtPO4qwEXGdVfWzfnI=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
@@ -255,8 +255,8 @@ github.com/onsi/gomega v1.7.1/go.mod h1:XdKZgCCFLUoM/7CFJVPcG8C1xQ1AJ0vpAezJrB7J
 github.com/onsi/gomega v1.10.1/go.mod h1:iN09h71vgCQne3DLsj+A5owkum+a2tYe+TOCB1ybHNo=
 github.com/onsi/gomega v1.42.1 h1:iN1rCUX+44NZ1Dc97MPoeFYbFR0vh8zxoxMFwKdyZ6I=
 github.com/onsi/gomega v1.42.1/go.mod h1:REff/hsDsodHoKlWsP2mAPhu1+5/6hVYNf9rIEBpeSg=
-github.com/opendatahub-io/odh-platform-utilities v0.2.0 h1:4qqIzw34eIxN6U94tzikmIq6SWBJBm7mbpKYaGADzjw=
-github.com/opendatahub-io/odh-platform-utilities v0.2.0/go.mod h1:U76jpNAMv6JO5HFRYTMcGfYObc3NF1IngxsIsgWAMj4=
+github.com/opendatahub-io/odh-platform-utilities v0.3.0 h1:bRRyt61sGb9Wa5r9MnRE9gI7B7R6ukFVJ1X5sERjBnw=
+github.com/opendatahub-io/odh-platform-utilities v0.3.0/go.mod h1:RbnUlLqR+D6BxqpZFjtzkKcz9UtB6BjMUOiLuBY0aeE=
 github.com/openshift/api v0.0.0-20260629123346-784126000268 h1:s2Z/n/ihnmPddz89PnLMkcOgjoe28VlkuDOMUu7y3uI=
 github.com/openshift/api v0.0.0-20260629123346-784126000268/go.mod h1:Jm45pE7O6/G0tYYhiLzNyZykTjmf9BfhsKYuGfLLwTE=
 github.com/openshift/controller-runtime-common v0.0.0-20260428152732-64ee174f5e2e h1:k89oIo2EjX0PRSdi1kesktCyWp50SC9WwKurvupvRGs=
