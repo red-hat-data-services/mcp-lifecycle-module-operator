@@ -28,6 +28,7 @@ type Params struct {
 	OperandImage     string
 	TLSMinVersion    string
 	TLSCipherSuites  string
+	TLSGroups        string
 }
 
 // Provider abstracts how operand manifests are obtained and transformed.

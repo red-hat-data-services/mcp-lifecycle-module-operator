@@ -69,7 +69,7 @@ func (p *KustomizeProvider) Manifests(_ context.Context, params Params) ([]unstr
 		}),
 		manifestival.InjectNamespace(targetNS),
 		replaceImage(params.OperandImage),
-		injectTLSEnvVars(params.TLSMinVersion, params.TLSCipherSuites),
+		injectTLSEnvVars(params.TLSMinVersion, params.TLSCipherSuites, params.TLSGroups),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("transforming manifests: %w", err)
@@ -120,12 +120,13 @@ func injectLabels(labels map[string]string) manifestival.Transformer {
 const (
 	envTLSMinVersion   = "TLS_MIN_VERSION"
 	envTLSCipherSuites = "TLS_CIPHER_SUITES"
+	envTLSGroups       = "TLS_GROUPS"
 	envPropagateTLS    = "PROPAGATE_TLS_ENV_VARS"
 )
 
-func injectTLSEnvVars(minVersion, cipherSuites string) manifestival.Transformer {
+func injectTLSEnvVars(minVersion, cipherSuites, groups string) manifestival.Transformer {
 	return func(u *unstructured.Unstructured) error {
-		if minVersion == "" && cipherSuites == "" {
+		if minVersion == "" && cipherSuites == "" && groups == "" {
 			return nil
 		}
 		if u.GetKind() != "Deployment" {
@@ -150,6 +151,7 @@ func injectTLSEnvVars(minVersion, cipherSuites string) manifestival.Transformer 
 			envSlice, _, _ := unstructured.NestedSlice(container, "env")
 			envSlice = setEnvVar(envSlice, envTLSMinVersion, minVersion)
 			envSlice = setEnvVar(envSlice, envTLSCipherSuites, cipherSuites)
+			envSlice = setEnvVar(envSlice, envTLSGroups, groups)
 			envSlice = setEnvVar(envSlice, envPropagateTLS, "true")
 
 			if err := unstructured.SetNestedSlice(container, envSlice, "env"); err != nil {

@@ -33,7 +33,7 @@ func TestFetchTLSConfig_IntermediateProfile(t *testing.T) {
 		WithObjects(apiServer).
 		Build()
 
-	minVersion, cipherSuites, err := fetchTLSConfig(context.Background(), cli)
+	minVersion, cipherSuites, _, err := fetchTLSConfig(context.Background(), cli)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestFetchTLSConfig_ModernProfile(t *testing.T) {
 		WithObjects(apiServer).
 		Build()
 
-	minVersion, cipherSuites, err := fetchTLSConfig(context.Background(), cli)
+	minVersion, cipherSuites, _, err := fetchTLSConfig(context.Background(), cli)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestFetchTLSConfig_CustomProfile(t *testing.T) {
 		WithObjects(apiServer).
 		Build()
 
-	minVersion, cipherSuites, err := fetchTLSConfig(context.Background(), cli)
+	minVersion, cipherSuites, _, err := fetchTLSConfig(context.Background(), cli)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestFetchTLSConfig_NilProfile_ReturnsIntermediateDefaults(t *testing.T) {
 		WithObjects(apiServer).
 		Build()
 
-	minVersion, cipherSuites, err := fetchTLSConfig(context.Background(), cli)
+	minVersion, cipherSuites, _, err := fetchTLSConfig(context.Background(), cli)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestFetchTLSConfig_APIServerNotFound_ReturnsDefaults(t *testing.T) {
 		WithScheme(tlsTestScheme).
 		Build()
 
-	minVersion, cipherSuites, err := fetchTLSConfig(context.Background(), cli)
+	minVersion, cipherSuites, _, err := fetchTLSConfig(context.Background(), cli)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,12 +173,48 @@ func TestFetchTLSConfig_APIServerNotFound_ReturnsDefaults(t *testing.T) {
 	}
 }
 
+func TestFetchTLSConfig_CustomProfile_WithGroups(t *testing.T) {
+	apiServer := &configv1.APIServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+		Spec: configv1.APIServerSpec{
+			TLSSecurityProfile: &configv1.TLSSecurityProfile{
+				Type: configv1.TLSProfileCustomType,
+				Custom: &configv1.CustomTLSProfile{
+					TLSProfileSpec: configv1.TLSProfileSpec{
+						MinTLSVersion: configv1.VersionTLS13,
+						Ciphers:       []string{"TLS_AES_128_GCM_SHA256"},
+						Groups: []configv1.TLSGroup{
+							"X25519MLKEM768",
+							"X25519",
+							"secp256r1",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	cli := fake.NewClientBuilder().
+		WithScheme(tlsTestScheme).
+		WithObjects(apiServer).
+		Build()
+
+	_, _, groups, err := fetchTLSConfig(context.Background(), cli)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if groups != "X25519MLKEM768,X25519,secp256r1" {
+		t.Errorf("groups = %q, want %q", groups, "X25519MLKEM768,X25519,secp256r1")
+	}
+}
+
 func TestFetchTLSConfig_NoMatchError_ReturnsDefaults(t *testing.T) {
 	cli := fake.NewClientBuilder().
 		WithScheme(runtime.NewScheme()).
 		Build()
 
-	minVersion, cipherSuites, err := fetchTLSConfig(context.Background(), cli)
+	minVersion, cipherSuites, _, err := fetchTLSConfig(context.Background(), cli)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
