@@ -156,7 +156,7 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 		return r.handleRemoved(ctx, cr, cm)
 	}
 
-	tlsMinVersion, tlsCipherSuites, err := fetchTLSConfig(ctx, r.Client)
+	tlsMinVersion, tlsCipherSuites, tlsGroups, err := fetchTLSConfig(ctx, r.Client)
 	if err != nil {
 		cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
 			"TLSConfigFetchFailed", fmt.Sprintf("Failed to fetch TLS config: %v", err))
@@ -165,13 +165,14 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 		return ctrl.Result{}, fmt.Errorf("fetching TLS config: %w", err)
 	}
 
-	log.V(1).Info("TLS configuration resolved", "minVersion", tlsMinVersion)
+	log.V(1).Info("TLS configuration resolved", "minVersion", tlsMinVersion, "groups", tlsGroups)
 
 	desired, err := r.ManifestProvider.Manifests(ctx, manifests.Params{
 		OperandNamespace: r.PodNamespace,
 		OperandImage:     r.OperandImage,
 		TLSMinVersion:    tlsMinVersion,
 		TLSCipherSuites:  tlsCipherSuites,
+		TLSGroups:        tlsGroups,
 	})
 	if err != nil {
 		cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,

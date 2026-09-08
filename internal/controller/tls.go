@@ -18,7 +18,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func fetchTLSConfig(ctx context.Context, cl client.Client) (minVersion string, cipherSuites string, err error) {
+func fetchTLSConfig(ctx context.Context, cl client.Client) (minVersion string, cipherSuites string, groups string, err error) {
 	log := logf.FromContext(ctx)
 
 	spec, err := utiltls.FetchAPIServerTLSProfile(ctx, cl)
@@ -32,18 +32,18 @@ func fetchTLSConfig(ctx context.Context, cl client.Client) (minVersion string, c
 			return intermediateDefaults()
 		}
 
-		return "", "", fmt.Errorf("fetching TLS profile: %w", err)
+		return "", "", "", fmt.Errorf("fetching TLS profile: %w", err)
 	}
 
 	return tlsProfileSpecToStrings(spec)
 }
 
-func intermediateDefaults() (string, string, error) {
+func intermediateDefaults() (string, string, string, error) {
 	defaultSpec := *configv1.TLSProfiles[configv1.TLSProfileIntermediateType]
 	return tlsProfileSpecToStrings(defaultSpec)
 }
 
-func tlsProfileSpecToStrings(spec configv1.TLSProfileSpec) (string, string, error) {
+func tlsProfileSpecToStrings(spec configv1.TLSProfileSpec) (string, string, string, error) {
 	minVersion := string(spec.MinTLSVersion)
 	if minVersion == "" {
 		minVersion = string(configv1.VersionTLS12)
@@ -51,7 +51,12 @@ func tlsProfileSpecToStrings(spec configv1.TLSProfileSpec) (string, string, erro
 
 	ianaCiphers := libgocrypto.OpenSSLToIANACipherSuites(spec.Ciphers)
 
-	return minVersion, strings.Join(ianaCiphers, ","), nil
+	groupStrs := make([]string, len(spec.Groups))
+	for i, g := range spec.Groups {
+		groupStrs[i] = string(g)
+	}
+
+	return minVersion, strings.Join(ianaCiphers, ","), strings.Join(groupStrs, ","), nil
 }
 
 func isNotRegisteredError(err error) bool {
