@@ -27,12 +27,6 @@ rules:
   - ""
   resources:
   - pods
-  verbs:
-  - get
-  - list
-- apiGroups:
-  - ""
-  resources:
   - secrets
   verbs:
   - get
@@ -46,6 +40,18 @@ rules:
   verbs:
   - create
   - patch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingwebhookconfigurations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - apiextensions.k8s.io
   resources:
@@ -82,6 +88,19 @@ rules:
   - subjectaccessreviews
   verbs:
   - create
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  - issuers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - components.platform.opendatahub.io
   resources:
@@ -129,8 +148,49 @@ rules:
   - update
   - watch
 - apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - mcp.kuadrant.io
+  resources:
+  - mcpgatewayextensions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - mcp.kuadrant.io
+  resources:
+  - mcpserverregistrations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - mcp.x-k8s.io
   resources:
+  - mcpgatewaybindings
   - mcpservers
   verbs:
   - create
@@ -144,12 +204,14 @@ rules:
 - apiGroups:
   - mcp.x-k8s.io
   resources:
+  - mcpgatewaybindings/finalizers
   - mcpservers/finalizers
   verbs:
   - update
 - apiGroups:
   - mcp.x-k8s.io
   resources:
+  - mcpgatewaybindings/status
   - mcpservers/status
   verbs:
   - get

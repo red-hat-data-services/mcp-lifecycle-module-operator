@@ -92,4 +92,15 @@ echo "Installing prometheus-operator..."
 kubectl apply --server-side -f https://github.com/prometheus-operator/prometheus-operator/releases/latest/download/bundle.yaml
 kubectl -n default rollout status deployment/prometheus-operator --timeout=60s
 
+# Install cert-manager. The operand's MCPServer conversion webhook is served with
+# a certificate minted by a cert-manager Certificate/Issuer, and its CA is injected
+# into the CRD and ValidatingWebhookConfiguration via cert-manager's ca-injector.
+# Without cert-manager the operand pod never mounts webhook-server-cert and stays
+# ContainerCreating, so the operand never becomes Ready.
+echo "Installing cert-manager..."
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+kubectl -n cert-manager rollout status deployment/cert-manager --timeout=120s
+kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=120s
+kubectl -n cert-manager rollout status deployment/cert-manager-cainjector --timeout=120s
+
 echo "Kind cluster ready with local registry at localhost:${REGISTRY_PORT}"

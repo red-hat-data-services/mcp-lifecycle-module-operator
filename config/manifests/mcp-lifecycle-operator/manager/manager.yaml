@@ -59,12 +59,18 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --logging-configmap-name=mcp-lifecycle-operator-config
+          - --logging-configmap-key=log-level
           # Uncomment to enable development-style logging (human-readable, debug level):
           # - --zap-devel
         image: controller:latest
         name: manager
         ports: []
         env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: GOMEMLIMIT
           value: "460MiB"
         securityContext:

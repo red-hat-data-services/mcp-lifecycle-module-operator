@@ -1,7 +1,7 @@
 # Complete MCPServer example showing all available fields.
 # Most fields are optional - see the API reference for details:
 # https://mcp-lifecycle-operator.sigs.k8s.io/reference/
-apiVersion: mcp.x-k8s.io/v1alpha1
+apiVersion: mcp.x-k8s.io/v1beta1
 kind: MCPServer
 metadata:
   name: complete-example
@@ -22,6 +22,10 @@ spec:
     type: ContainerImage
     containerImage:
       ref: quay.io/containers/kubernetes_mcp_server:latest
+      # Optional image pull behavior and credentials for private registries.
+      # pullPolicy: IfNotPresent
+      # imagePullSecrets:
+      #   - name: registry-credentials
 
   # Config defines how the MCP server is configured.
   config:

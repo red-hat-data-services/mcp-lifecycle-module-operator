@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"strings"
 
 	"github.com/manifestival/manifestival"
 	v1alpha1 "github.com/opendatahub-io/mcp-lifecycle-module-operator/api/v1alpha1"
@@ -68,6 +69,7 @@ func (p *KustomizeProvider) Manifests(_ context.Context, params Params) ([]unstr
 			odhLabels.PlatformPartOf: v1alpha1.MCPLifecycleOperatorServiceName,
 		}),
 		manifestival.InjectNamespace(targetNS),
+		rewriteCertManagerNamespace(DefaultOperandNamespace, targetNS),
 		replaceImage(params.OperandImage),
 		injectTLSEnvVars(params.TLSMinVersion, params.TLSCipherSuites, params.TLSGroups),
 	)
@@ -101,6 +103,62 @@ func (p *KustomizeProvider) loadResources() ([]unstructured.Unstructured, error)
 	}
 
 	return resources, nil
+}
+
+const certManagerInjectCAAnnotation = "cert-manager.io/inject-ca-from"
+
+// rewriteCertManagerNamespace fixes cert-manager namespace references that
+// manifestival.InjectNamespace does not touch. InjectNamespace rewrites
+// metadata.namespace and the webhook/CRD-conversion clientConfig.service.namespace,
+// but the operand manifests also embed the operand namespace inside:
+//   - the "cert-manager.io/inject-ca-from: <ns>/<certificate>" annotation value
+//     (on the CRDs and the ValidatingWebhookConfiguration), and
+//   - Certificate spec.dnsNames (the webhook service FQDN, e.g.
+//     "<svc>.<ns>.svc" / "<svc>.<ns>.svc.cluster.local").
+//
+// When the operand is deployed to a namespace other than the one baked into the
+// vendored manifests (fromNS), these stale references make cert-manager's
+// ca-injector look in the wrong namespace and mint a certificate with the wrong
+// SANs, so the conversion webhook fails TLS. This transform retargets them to toNS.
+func rewriteCertManagerNamespace(fromNS, toNS string) manifestival.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if fromNS == toNS || fromNS == "" {
+			return nil
+		}
+
+		if annotations := u.GetAnnotations(); annotations != nil {
+			if v, ok := annotations[certManagerInjectCAAnnotation]; ok {
+				if rest, found := strings.CutPrefix(v, fromNS+"/"); found {
+					annotations[certManagerInjectCAAnnotation] = toNS + "/" + rest
+					u.SetAnnotations(annotations)
+				}
+			}
+		}
+
+		if u.GetKind() == "Certificate" {
+			dnsNames, found, err := unstructured.NestedStringSlice(u.Object, "spec", "dnsNames")
+			if err != nil {
+				return fmt.Errorf("certificate %q: reading dnsNames: %w", u.GetName(), err)
+			}
+			if found {
+				changed := false
+				for i, name := range dnsNames {
+					updated := strings.ReplaceAll(name, "."+fromNS+".", "."+toNS+".")
+					if updated != name {
+						dnsNames[i] = updated
+						changed = true
+					}
+				}
+				if changed {
+					if err := unstructured.SetNestedStringSlice(u.Object, dnsNames, "spec", "dnsNames"); err != nil {
+						return fmt.Errorf("certificate %q: setting dnsNames: %w", u.GetName(), err)
+					}
+				}
+			}
+		}
+
+		return nil
+	}
 }
 
 func injectLabels(labels map[string]string) manifestival.Transformer {

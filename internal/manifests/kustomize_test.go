@@ -392,3 +392,113 @@ spec:
 		}
 	}
 }
+
+const certManagerManifest = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mcpservers.mcp.x-k8s.io
+  annotations:
+    cert-manager.io/inject-ca-from: mcp-lifecycle-operator-system/mcp-lifecycle-operator-serving-cert
+spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        service:
+          name: mcp-lifecycle-operator-webhook-service
+          namespace: mcp-lifecycle-operator-system
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: mcp-lifecycle-operator-validating-webhook-configuration
+  annotations:
+    cert-manager.io/inject-ca-from: mcp-lifecycle-operator-system/mcp-lifecycle-operator-serving-cert
+webhooks:
+- name: vmcpserver.mcp.x-k8s.io
+  clientConfig:
+    service:
+      name: mcp-lifecycle-operator-webhook-service
+      namespace: mcp-lifecycle-operator-system
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mcp-lifecycle-operator-serving-cert
+  namespace: mcp-lifecycle-operator-system
+spec:
+  dnsNames:
+  - mcp-lifecycle-operator-webhook-service.mcp-lifecycle-operator-system.svc
+  - mcp-lifecycle-operator-webhook-service.mcp-lifecycle-operator-system.svc.cluster.local
+  secretName: webhook-server-cert
+`
+
+func TestRewriteCertManagerNamespace(t *testing.T) {
+	provider := NewKustomizeProvider(newTestFS(certManagerManifest))
+
+	resources, err := provider.Manifests(context.Background(), Params{
+		OperandNamespace: "redhat-ods-applications",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, obj := range resources {
+		switch obj.GetKind() {
+		case "CustomResourceDefinition":
+			got := obj.GetAnnotations()[certManagerInjectCAAnnotation]
+			want := "redhat-ods-applications/mcp-lifecycle-operator-serving-cert"
+			if got != want {
+				t.Errorf("inject-ca-from = %q, want %q", got, want)
+			}
+			// InjectNamespace must still have retargeted the conversion service namespace.
+			ns, _, _ := unstructured.NestedString(obj.Object,
+				"spec", "conversion", "webhook", "clientConfig", "service", "namespace")
+			if ns != "redhat-ods-applications" {
+				t.Errorf("conversion service namespace = %q, want %q", ns, "redhat-ods-applications")
+			}
+		case "ValidatingWebhookConfiguration":
+			got := obj.GetAnnotations()[certManagerInjectCAAnnotation]
+			want := "redhat-ods-applications/mcp-lifecycle-operator-serving-cert"
+			if got != want {
+				t.Errorf("inject-ca-from = %q, want %q", got, want)
+			}
+		case "Certificate":
+			dnsNames, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "dnsNames")
+			want := []string{
+				"mcp-lifecycle-operator-webhook-service.redhat-ods-applications.svc",
+				"mcp-lifecycle-operator-webhook-service.redhat-ods-applications.svc.cluster.local",
+			}
+			if len(dnsNames) != len(want) {
+				t.Fatalf("dnsNames = %v, want %v", dnsNames, want)
+			}
+			for i := range want {
+				if dnsNames[i] != want[i] {
+					t.Errorf("dnsNames[%d] = %q, want %q", i, dnsNames[i], want[i])
+				}
+			}
+		}
+	}
+}
+
+func TestRewriteCertManagerNamespaceNoopWhenDefault(t *testing.T) {
+	provider := NewKustomizeProvider(newTestFS(certManagerManifest))
+
+	// OperandNamespace empty -> DefaultOperandNamespace, which equals the baked-in
+	// namespace, so the cert-manager references must be left untouched.
+	resources, err := provider.Manifests(context.Background(), Params{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, obj := range resources {
+		if obj.GetKind() != "CustomResourceDefinition" {
+			continue
+		}
+		got := obj.GetAnnotations()[certManagerInjectCAAnnotation]
+		want := "mcp-lifecycle-operator-system/mcp-lifecycle-operator-serving-cert"
+		if got != want {
+			t.Errorf("inject-ca-from = %q, want %q", got, want)
+		}
+	}
+}
