@@ -31,6 +31,17 @@ const (
 	// it into Ready/Degraded/ProvisioningSucceeded: a pending, running, or
 	// failed migration is observable but never degrades operand readiness.
 	ConditionMCPServerStorageMigrated = "MCPServerStorageMigrated"
+
+	// ConditionMCPServerConversionVerified records that THIS controller has
+	// verified stored MCPServer objects are convertible to v1beta1 (by listing
+	// them at v1beta1, which forces the conversion webhook to run). It is a
+	// durable marker the pre-gate (ungated) controller never writes, so a
+	// freshly rolled-out controller re-runs the conversion check even when the
+	// previous controller already advanced status.distribution to the desired
+	// version during the upgrade window. It is intentionally EXCLUDED from
+	// featureConditionTypes so it never affects operand readiness; conversion
+	// FAILURES are surfaced on MCPLifecycleOperatorAvailable instead.
+	ConditionMCPServerConversionVerified = "MCPServerConversionVerified"
 )
 
 var featureConditionTypes = map[string]bool{
@@ -61,7 +72,7 @@ func (cm *ConditionsManager) MarkTrue(condType string) {
 
 // MarkTrueWithReason marks a condition True with an explicit reason. MarkTrue
 // hardcodes reason "Available", which is wrong for signals other than operand
-// availability (e.g. a migration-succeeded condition).
+// availability (e.g. the migration-succeeded or conversion-verified markers).
 func (cm *ConditionsManager) MarkTrueWithReason(condType, reason string) {
 	libconditions.SetStatusCondition(cm.accessor, platformcommon.Condition{
 		Type:               condType,
