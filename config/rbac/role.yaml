@@ -218,6 +218,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - migration.k8s.io
+  resources:
+  - storageversionmigrations
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
   - monitoring.coreos.com
   resources:
   - servicemonitors

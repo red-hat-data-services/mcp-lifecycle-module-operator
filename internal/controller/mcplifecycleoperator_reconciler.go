@@ -118,6 +118,10 @@ type platformConfig struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:urls=/metrics,verbs=get
+// The reconciler drives a StorageVersionMigration to re-encode stored MCPServer
+// objects to v1beta1 (migration.k8s.io, provided on OpenShift by the
+// storage-version migrator).
+// +kubebuilder:rbac:groups=migration.k8s.io,resources=storageversionmigrations,verbs=create;delete;get
 
 func (r *MCPLifecycleOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -228,7 +232,14 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 		r.setDistributionStatus(cr, pc)
 	}
 
-	return ctrl.Result{}, nil
+	// Drive the storage-version migration of stored MCPServer objects to
+	// v1beta1. This runs last and is deliberately independent of operand
+	// readiness: reconcileStorageMigration only sets its own
+	// MCPServerStorageMigrated condition (excluded from AggregateReady) and
+	// never returns an error, so a pending/running/failed migration never
+	// degrades Ready/Degraded. It returns a requeue while the migration is in
+	// progress and zero once it has succeeded.
+	return r.reconcileStorageMigration(ctx, cr, cm), nil
 }
 
 // updateBaseStatus is deferred in every reconcile to ensure observedGeneration,
@@ -284,6 +295,17 @@ func (r *MCPLifecycleOperatorReconciler) handleRemoved(ctx context.Context, cr *
 		log.Error(err, "Failed to delete owned resources, will retry on next reconcile")
 
 		return ctrl.Result{RequeueAfter: defaultRequeueDelay}, fmt.Errorf("deleting owned resources: %w", err)
+	}
+
+	// deleteAllOwned garbage-collects by the PlatformPartOf label scoped to the
+	// operand namespace. The StorageVersionMigration is cluster-scoped and not
+	// carrying that label, so it is invisible to that sweep and would linger on
+	// Removed (its ownerReference only fires on CR deletion, not on Removed).
+	// Delete it explicitly.
+	if err := r.deleteStorageMigration(ctx); err != nil && !k8serr.IsNotFound(err) {
+		log.Error(err, "Failed to delete the storage-version migration, will retry on next reconcile")
+
+		return ctrl.Result{RequeueAfter: defaultRequeueDelay}, fmt.Errorf("deleting storage-version migration: %w", err)
 	}
 
 	log.Info("Successfully deleted all owned resources")

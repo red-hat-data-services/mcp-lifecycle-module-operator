@@ -24,6 +24,13 @@ import (
 
 const (
 	ConditionMCPLifecycleOperatorAvailable = "MCPLifecycleOperatorAvailable"
+
+	// ConditionMCPServerStorageMigrated reports the outcome of the stored
+	// MCPServer storage-version migration to v1beta1. It is intentionally
+	// EXCLUDED from featureConditionTypes below so AggregateReady never folds
+	// it into Ready/Degraded/ProvisioningSucceeded: a pending, running, or
+	// failed migration is observable but never degrades operand readiness.
+	ConditionMCPServerStorageMigrated = "MCPServerStorageMigrated"
 )
 
 var featureConditionTypes = map[string]bool{
@@ -48,6 +55,18 @@ func (cm *ConditionsManager) MarkTrue(condType string) {
 		Type:               condType,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Available",
+		ObservedGeneration: cm.generation,
+	})
+}
+
+// MarkTrueWithReason marks a condition True with an explicit reason. MarkTrue
+// hardcodes reason "Available", which is wrong for signals other than operand
+// availability (e.g. a migration-succeeded condition).
+func (cm *ConditionsManager) MarkTrueWithReason(condType, reason string) {
+	libconditions.SetStatusCondition(cm.accessor, platformcommon.Condition{
+		Type:               condType,
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
 		ObservedGeneration: cm.generation,
 	})
 }
