@@ -71,6 +71,35 @@ var _ = Describe("MCPLifecycleOperator", func() {
 		waitForOperandReady(ctx)
 	})
 
+	It("should reject an MCPLifecycleOperator CR whose name is not default", func() {
+		By("Creating the MCPLifecycleOperator CR with a non-default name")
+		cr := &v1alpha1.MCPLifecycleOperator{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "not-default",
+			},
+			Spec: v1alpha1.MCPLifecycleOperatorSpec{
+				ManagementSpec: platformcommon.ManagementSpec{
+					ManagementState: platformcommon.Managed,
+				},
+			},
+		}
+
+		// Guard against a CEL regression: if the API server accepts the
+		// non-default CR, ensure it is cleaned up so it does not leak into
+		// later specs (AfterEach only deletes the "default" singleton).
+		DeferCleanup(func() {
+			err := k8sClient.Delete(ctx, cr)
+			if err != nil && !k8serr.IsNotFound(err) {
+				Fail("failed to delete non-default MCPLifecycleOperator CR: " + err.Error())
+			}
+		})
+
+		By("Verifying the API server rejects the CR via the singleton CEL rule")
+		err := k8sClient.Create(ctx, cr)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("must be default"))
+	})
+
 	It("should keep namespace and module operator when CR is deleted", func() {
 		createManagedCR(ctx)
 		waitForOperandReady(ctx)
