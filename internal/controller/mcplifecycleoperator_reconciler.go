@@ -82,6 +82,12 @@ const (
 	// the check stays cheap even with many stored MCPServer objects.
 	conversionCheckPageLimit int64 = 500
 
+	// conversionCheckMaxRestarts caps how many times a single checkConversionHealth
+	// call restarts pagination after an expired continue token (HTTP 410) before it
+	// gives up and requeues, so a persistently churning cluster cannot spin the
+	// reconcile worker in an unbounded in-process loop.
+	conversionCheckMaxRestarts = 3
+
 	// reasonConversionCheckPending is set on MCPLifecycleOperatorAvailable when
 	// the MCPServer CRD / its v1beta1 version is not served yet (transient).
 	reasonConversionCheckPending = "ConversionCheckPending"
@@ -457,12 +463,15 @@ func (r *MCPLifecycleOperatorReconciler) checkDeploymentsReady(ctx context.Conte
 // marks MCPLifecycleOperatorAvailable false, aggregates readiness, and returns
 // a requeue result with ready=false so the caller returns (result, nil). A
 // successful list (including an empty one) leaves the condition to the caller's
-// MarkTrue. The list is read-only, spans all namespaces, and is paged so the
-// check stays bounded regardless of how many MCPServers are stored.
+// MarkTrue. The list is read-only, spans all namespaces, and is paged; an
+// expired continue token restarts pagination up to conversionCheckMaxRestarts
+// times and then requeues, so a single call always does bounded work regardless
+// of how many MCPServers are stored or how fast they churn.
 func (r *MCPLifecycleOperatorReconciler) checkConversionHealth(ctx context.Context, cm *v1alpha1.ConditionsManager) (ctrl.Result, bool) {
 	log := logf.FromContext(ctx)
 
 	continueToken := ""
+	restarts := 0
 	for {
 		list, err := r.DynamicClient.Resource(mcpServerGVR).List(ctx, metav1.ListOptions{
 			Limit:    conversionCheckPageLimit,
@@ -471,13 +480,42 @@ func (r *MCPLifecycleOperatorReconciler) checkConversionHealth(ctx context.Conte
 		if err != nil {
 			// The MCPServer CRD or its v1beta1 version may not be served yet
 			// (e.g. early in rollout or before conversion-webhook cert injection
-			// completes). Treat that as a transient pending state, distinct from
-			// a genuine conversion failure.
-			if meta.IsNoMatchError(err) || isNotRegisteredError(err) {
-				log.Info("MCPServer v1beta1 not served yet, deferring platform-version handshake")
+			// completes). The dynamic client issues raw REST calls with no
+			// RESTMapper or scheme, so an unserved resource surfaces as a 404
+			// NotFound rather than a no-match error. A LIST of a served resource
+			// with no objects returns an empty list (not NotFound), so NotFound
+			// here unambiguously means "not served" - unlike the .Get() in
+			// storageMigrationAPIServed, no discovery probe is needed to
+			// disambiguate. Treat it, along with the scheme/mapper variants, as a
+			// transient pending state distinct from a genuine conversion failure.
+			if k8serr.IsNotFound(err) || meta.IsNoMatchError(err) || isNotRegisteredError(err) {
+				log.Info("MCPServer v1beta1 not served, deferring platform-version handshake")
 				cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
 					reasonConversionCheckPending,
-					"MCPServer v1beta1 API is not served yet; deferring until the conversion path is ready")
+					"MCPServer v1beta1 API is not served (CRD absent or v1beta1 not yet served); deferring until the conversion path is ready")
+				cm.AggregateReady()
+
+				return ctrl.Result{RequeueAfter: defaultRequeueDelay}, false
+			}
+
+			// A continue token can expire between pages on a large, churning
+			// cluster (HTTP 410 Gone). That is an expected pagination event, not a
+			// conversion failure. Restart the listing from the first page a bounded
+			// number of times; if expiry keeps recurring, requeue and let
+			// controller-runtime re-drive rather than spinning this worker in an
+			// unbounded in-process loop.
+			if k8serr.IsResourceExpired(err) {
+				if restarts < conversionCheckMaxRestarts {
+					restarts++
+					continueToken = ""
+
+					continue
+				}
+
+				log.Info("MCPServer conversion-check continue token kept expiring, deferring", "restarts", restarts)
+				cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
+					reasonConversionCheckPending,
+					"MCPServer conversion check could not complete: list pagination kept expiring; retrying")
 				cm.AggregateReady()
 
 				return ctrl.Result{RequeueAfter: defaultRequeueDelay}, false

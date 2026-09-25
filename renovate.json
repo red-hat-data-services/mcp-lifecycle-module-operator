@@ -1,3 +1,47 @@
 {
-  "extends": [":disableRenovate"]
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>opendatahub-io/renovate-config",
+    "github>konflux-ci/mintmaker-presets:refresh-rpm-lockfiles"
+  ],
+  "commitMessagePrefix": "[{{baseBranch}}]",
+  "enabledManagers": ["tekton", "gomod", "dockerfile"],
+  "ignorePaths": ["/docs/**"],
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "Disable gomod on main — Go deps come from upstream",
+      "matchManagers": ["gomod"],
+      "matchBaseBranches": ["main"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": ["Dockerfile.konflux"],
+      "automerge": true,
+      "addLabels": ["jira/valid-reference", "lgtm", "approved"]
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "k8s.io dependencies",
+      "matchPackageNames": ["k8s.io/{/,}**"]
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "sigs.k8s.io dependencies",
+      "matchPackageNames": ["sigs.k8s.io/{/,}**"]
+    },
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "golang.org/x dependencies",
+      "matchPackageNames": ["golang.org/x/{/,}**"]
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "enabled": false
+    }
+  ]
 }
