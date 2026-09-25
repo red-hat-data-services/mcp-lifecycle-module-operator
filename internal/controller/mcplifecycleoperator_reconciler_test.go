@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -34,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	fakedynamic "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
@@ -144,6 +146,33 @@ var mcpServerListKinds = map[schema.GroupVersionResource]string{
 // successful empty list (the vacuous-pass case).
 func newFakeDynamicWithMCPServers(objects ...runtime.Object) *fakedynamic.FakeDynamicClient {
 	return fakedynamic.NewSimpleDynamicClientWithCustomListKinds(testScheme, mcpServerListKinds, objects...)
+}
+
+// recordingDynamic wraps a dynamic.Interface and records the Continue token of
+// every List call. The fake dynamic client's recorded action drops
+// ListOptions.Continue (NewRootListActionWithOptions keeps only the label/field
+// selectors), so a PrependReactor cannot observe it; wrapping the client at the
+// List boundary is the only way to assert pagination-token handling.
+type recordingDynamic struct {
+	dynamic.Interface
+	listContinues *[]string
+}
+
+func (r *recordingDynamic) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	return &recordingResource{
+		NamespaceableResourceInterface: r.Interface.Resource(gvr),
+		listContinues:                  r.listContinues,
+	}
+}
+
+type recordingResource struct {
+	dynamic.NamespaceableResourceInterface
+	listContinues *[]string
+}
+
+func (r *recordingResource) List(ctx context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	*r.listContinues = append(*r.listContinues, opts.Continue)
+	return r.NamespaceableResourceInterface.List(ctx, opts)
 }
 
 // newMCPServer returns an unstructured MCPServer at v1beta1 for seeding the
@@ -1036,19 +1065,132 @@ func TestCheckConversionHealth_ListError_Requeues(t *testing.T) {
 	}
 }
 
-func TestCheckConversionHealth_Pending_WhenCRDAbsent(t *testing.T) {
+func TestCheckConversionHealth_Pending_WhenAPINotServed(t *testing.T) {
+	// The dynamic client issues raw REST calls, so an unserved MCPServer v1beta1
+	// resource comes back as a 404 NotFound - a LIST of a served resource with no
+	// objects would instead return an empty list. The scheme/mapper variants are
+	// handled defensively too. All must defer via ConversionCheckPending rather
+	// than the failure path.
+	cases := map[string]error{
+		"NotFound":        k8serr.NewNotFound(mcpServerGVR.GroupResource(), ""),
+		"NoResourceMatch": &meta.NoResourceMatchError{PartialResource: mcpServerGVR},
+		"NotRegistered":   runtime.NewNotRegisteredErrForKind("test-scheme", mcpServerGVR.GroupVersion().WithKind("MCPServer")),
+	}
+	for name, injErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			dyn := newFakeDynamicWithMCPServers()
+			dyn.PrependReactor("list", "mcpservers", func(clienttesting.Action) (bool, runtime.Object, error) {
+				return true, nil, injErr
+			})
+			r, cr, cm := newConversionTestReconciler(dyn)
+
+			result, ready := r.checkConversionHealth(context.Background(), cm)
+			if ready {
+				t.Fatal("expected ready=false when the MCPServer resource is not served")
+			}
+			if result.RequeueAfter != defaultRequeueDelay {
+				t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, defaultRequeueDelay)
+			}
+
+			c := findCondition(cr, v1alpha1.ConditionMCPLifecycleOperatorAvailable)
+			if c == nil {
+				t.Fatal("expected MCPLifecycleOperatorAvailable condition")
+			}
+			if c.Reason != reasonConversionCheckPending {
+				t.Errorf("condition reason = %q, want %q", c.Reason, reasonConversionCheckPending)
+			}
+		})
+	}
+}
+
+func TestCheckConversionHealth_ExpiredContinue_Restarts(t *testing.T) {
+	// An expired continue token (HTTP 410 Gone) on a follow-up page is a normal
+	// pagination event on a churning cluster, not a conversion failure. The gate
+	// must restart listing from the first page rather than marking the operand
+	// unavailable.
 	dyn := newFakeDynamicWithMCPServers()
+	calls := 0
 	dyn.PrependReactor("list", "mcpservers", func(clienttesting.Action) (bool, runtime.Object, error) {
-		return true, nil, &meta.NoResourceMatchError{PartialResource: mcpServerGVR}
+		calls++
+
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: mcpServerGVR.Group, Version: mcpServerGVR.Version, Kind: "MCPServerList",
+		})
+
+		switch calls {
+		case 1:
+			// First page hands out a continue token.
+			list.Items = []unstructured.Unstructured{*newMCPServer("ns", "server-1")}
+			list.SetContinue("page-2-token")
+		case 2:
+			// The second page's continue token has expired.
+			return true, nil, k8serr.NewResourceExpired("continue token expired")
+		case 3:
+			// Restarted from the first page (no continue token); finish cleanly.
+			list.Items = []unstructured.Unstructured{*newMCPServer("ns", "server-1")}
+			list.SetContinue("")
+		default:
+			t.Fatalf("unexpected LIST call #%d (gate did not restart on expiry)", calls)
+		}
+
+		return true, list, nil
+	})
+	r, cr, cm := newConversionTestReconciler(dyn)
+
+	// The fake client's recorded action discards ListOptions.Continue, so wrap
+	// the client to capture the token actually sent on each List. This asserts
+	// the token is reset to "" on restart (production line ~510) rather than
+	// only that a third call happened - a regression dropping that reset would
+	// otherwise pass on call count alone.
+	var continues []string
+	r.DynamicClient = &recordingDynamic{Interface: dyn, listContinues: &continues}
+
+	result, ready := r.checkConversionHealth(context.Background(), cm)
+	if !ready {
+		t.Fatal("expected ready=true after restarting a paginated list on an expired token")
+	}
+	if result != (ctrl.Result{}) {
+		t.Errorf("expected empty result, got %v", result)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 LIST calls (restart after expiry), got %d", calls)
+	}
+	wantContinues := []string{"", "page-2-token", ""}
+	if len(continues) != len(wantContinues) {
+		t.Fatalf("recorded %d List calls, want %d: %v", len(continues), len(wantContinues), continues)
+	}
+	for i, want := range wantContinues {
+		if continues[i] != want {
+			t.Errorf("List call %d Continue = %q, want %q (token must reset to empty on restart)", i+1, continues[i], want)
+		}
+	}
+	if c := findCondition(cr, v1alpha1.ConditionMCPLifecycleOperatorAvailable); c != nil && c.Status == metav1.ConditionFalse {
+		t.Errorf("expired token must not mark Available false, got reason %q", c.Reason)
+	}
+}
+
+func TestCheckConversionHealth_ExpiredContinue_GivesUpAfterCap(t *testing.T) {
+	// If the continue token keeps expiring, the gate must not loop forever: it
+	// restarts a bounded number of times, then requeues (pending) so
+	// controller-runtime re-drives with backoff rather than spinning the worker.
+	dyn := newFakeDynamicWithMCPServers()
+	calls := 0
+	dyn.PrependReactor("list", "mcpservers", func(clienttesting.Action) (bool, runtime.Object, error) {
+		calls++
+		return true, nil, k8serr.NewResourceExpired("continue token expired")
 	})
 	r, cr, cm := newConversionTestReconciler(dyn)
 
 	result, ready := r.checkConversionHealth(context.Background(), cm)
 	if ready {
-		t.Fatal("expected ready=false when the MCPServer resource is not served")
+		t.Fatal("expected ready=false when pagination keeps expiring")
 	}
 	if result.RequeueAfter != defaultRequeueDelay {
 		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, defaultRequeueDelay)
+	}
+	if want := conversionCheckMaxRestarts + 1; calls != want {
+		t.Errorf("expected %d LIST calls (bounded restarts, then give up), got %d", want, calls)
 	}
 
 	c := findCondition(cr, v1alpha1.ConditionMCPLifecycleOperatorAvailable)
