@@ -100,6 +100,24 @@ var _ = Describe("MCPLifecycleOperator", func() {
 		Expect(err.Error()).To(ContainSubstring("must be default"))
 	})
 
+	It("should report the module release metadata in status.releases", func() {
+		createManagedCR(ctx)
+		waitForOperandReady(ctx)
+
+		By("Verifying status.releases contains the module release metadata")
+		Eventually(func(g Gomega) {
+			cr := &v1alpha1.MCPLifecycleOperator{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: v1alpha1.MCPLifecycleOperatorInstanceName,
+			}, cr)).To(Succeed())
+
+			release := findRelease(cr.Status.Releases, v1alpha1.MCPLifecycleOperatorServiceName)
+			g.Expect(release).NotTo(BeNil())
+			g.Expect(release.RepoURL).To(Equal("https://github.com/opendatahub-io/mcp-lifecycle-module-operator"))
+			g.Expect(release.Version).NotTo(BeEmpty())
+		}, timeout, interval).Should(Succeed())
+	})
+
 	It("should keep namespace and module operator when CR is deleted", func() {
 		createManagedCR(ctx)
 		waitForOperandReady(ctx)
@@ -174,6 +192,39 @@ var _ = Describe("MCPLifecycleOperator", func() {
 			g.Expect(dep.Status.AvailableReplicas).To(BeNumerically(">=", int32(1)))
 		}, consistentDuration, consistentInterval).Should(Succeed())
 	})
+
+	It("should update observedGeneration to match generation after a spec change", func() {
+		createManagedCR(ctx)
+		waitForOperandReady(ctx)
+
+		By("Recording the current generation of the CR")
+		cr := &v1alpha1.MCPLifecycleOperator{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: v1alpha1.MCPLifecycleOperatorInstanceName,
+		}, cr)).To(Succeed())
+		genBefore := cr.Generation
+
+		By("Changing ManagementState to trigger a spec update")
+		Eventually(func(g Gomega) {
+			fresh := &v1alpha1.MCPLifecycleOperator{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: v1alpha1.MCPLifecycleOperatorInstanceName,
+			}, fresh)).To(Succeed())
+			fresh.Spec.ManagementState = platformcommon.Removed
+			g.Expect(k8sClient.Update(ctx, fresh)).To(Succeed())
+		}, timeout, interval).Should(Succeed())
+
+		By("Verifying observedGeneration catches up to the new generation")
+		Eventually(func(g Gomega) {
+			updated := &v1alpha1.MCPLifecycleOperator{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: v1alpha1.MCPLifecycleOperatorInstanceName,
+			}, updated)).To(Succeed())
+
+			g.Expect(updated.Generation).To(BeNumerically(">", genBefore))
+			g.Expect(updated.Status.Status.ObservedGeneration).To(Equal(updated.Generation))
+		}, timeout, interval).Should(Succeed())
+	})
 })
 
 func createManagedCR(ctx context.Context) {
@@ -230,6 +281,15 @@ func waitForOperandReady(ctx context.Context) {
 		g.Expect(readyCondition).NotTo(BeNil())
 		g.Expect(readyCondition.Status).To(Equal(metav1.ConditionTrue))
 	}, timeout, interval).Should(Succeed())
+}
+
+func findRelease(releases []platformcommon.ComponentRelease, name string) *platformcommon.ComponentRelease {
+	for i := range releases {
+		if releases[i].Name == name {
+			return &releases[i]
+		}
+	}
+	return nil
 }
 
 func findCondition(conditions []platformcommon.Condition, condType string) *platformcommon.Condition {
