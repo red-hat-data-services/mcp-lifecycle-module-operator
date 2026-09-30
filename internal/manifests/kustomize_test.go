@@ -37,6 +37,16 @@ metadata:
   name: controller-manager
   namespace: mcp-lifecycle-operator-system
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-lifecycle-operator-webhook-service
+  namespace: mcp-lifecycle-operator-system
+spec:
+  selector:
+    app.kubernetes.io/name: mcp-lifecycle-operator
+    control-plane: controller-manager
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -80,14 +90,23 @@ func TestKustomizeProviderManifests(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(resources) != 4 {
-		t.Fatalf("expected 4 resources, got %d", len(resources))
+	if len(resources) != 5 {
+		t.Fatalf("expected 5 resources, got %d", len(resources))
 	}
 
 	for _, obj := range resources {
 		labels := obj.GetLabels()
 		if labels[odhLabels.PlatformPartOf] != v1alpha1.MCPLifecycleOperatorServiceName {
 			t.Errorf("resource %s/%s missing part-of label", obj.GetKind(), obj.GetName())
+		}
+		if obj.GetKind() == "Service" {
+			selector, found, err := unstructured.NestedStringMap(obj.Object, "spec", "selector")
+			if err != nil || !found {
+				t.Fatalf("webhook Service selector missing or invalid: found=%v err=%v", found, err)
+			}
+			if selector["app.kubernetes.io/name"] != "mcp-lifecycle-operator" || selector["control-plane"] != "controller-manager" {
+				t.Errorf("webhook Service selector = %v, want both operand labels", selector)
+			}
 		}
 	}
 }
@@ -108,7 +127,7 @@ func TestReplaceNamespace(t *testing.T) {
 			if obj.GetName() != "target-ns" {
 				t.Errorf("Namespace name = %q, want %q", obj.GetName(), "target-ns")
 			}
-		case "ServiceAccount", "Deployment":
+		case "ServiceAccount", "Service", "Deployment":
 			if obj.GetNamespace() != "target-ns" {
 				t.Errorf("%s namespace = %q, want %q", obj.GetKind(), obj.GetNamespace(), "target-ns")
 			}
