@@ -20,15 +20,19 @@ import (
 	"cmp"
 	"context"
 	"os"
+	"slices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -69,9 +73,65 @@ var _ = Describe("MCPLifecycleOperator", func() {
 		}
 	})
 
-	It("should deploy the MCP Lifecycle Operator when the CR is created", func() {
+	It("deploys the MCP Lifecycle Operator with a reachable webhook", func() {
 		createManagedCR(ctx)
 		waitForOperandReady(ctx)
+
+		const serviceName = "mcp-lifecycle-operator-webhook-service"
+		By("Checking the webhook Service and fail-closed admission registration")
+		Eventually(func(g Gomega) {
+			service := &corev1.Service{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: operandNamespace, Name: serviceName}, service)).To(Succeed())
+			g.Expect(service.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/name", "mcp-lifecycle-operator"))
+
+			module := &appsv1.Deployment{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: operandNamespace, Name: moduleOperatorDeployment}, module)).To(Succeed())
+			g.Expect(labels.SelectorFromSet(service.Spec.Selector).Matches(labels.Set(module.Spec.Template.Labels))).To(BeFalse(),
+				"webhook Service selector %v matches module Pod labels %v", service.Spec.Selector, module.Spec.Template.Labels)
+
+			configuration := &admissionv1.ValidatingWebhookConfiguration{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mcp-lifecycle-operator-validating-webhook-configuration"}, configuration)).To(Succeed())
+			index := slices.IndexFunc(configuration.Webhooks, func(webhook admissionv1.ValidatingWebhook) bool {
+				return webhook.Name == "vmcpserver.mcp.x-k8s.io"
+			})
+			g.Expect(index).To(BeNumerically(">=", 0))
+			webhook := configuration.Webhooks[index]
+			g.Expect(webhook.ClientConfig.Service).To(HaveValue(SatisfyAll(
+				HaveField("Name", serviceName),
+				HaveField("Namespace", operandNamespace),
+			)))
+			g.Expect(webhook.FailurePolicy).To(HaveValue(Equal(admissionv1.Fail)))
+			g.Expect(webhook.NamespaceSelector).To(Or(BeNil(), Equal(&metav1.LabelSelector{})))
+			g.Expect(webhook.ObjectSelector).To(Or(BeNil(), Equal(&metav1.LabelSelector{})))
+			g.Expect(webhook.MatchConditions).To(BeEmpty())
+			g.Expect(webhook.Rules).To(ContainElement(SatisfyAll(
+				HaveField("Operations", ContainElement(admissionv1.Create)),
+				HaveField("APIGroups", ContainElement("mcp.x-k8s.io")),
+				HaveField("APIVersions", ContainElement("v1alpha1")),
+				HaveField("Resources", ContainElement("mcpservers")),
+				HaveField("Scope", Or(BeNil(), HaveValue(BeElementOf(admissionv1.AllScopes, admissionv1.NamespacedScope)))),
+			)))
+		}, timeout, interval).Should(Succeed())
+
+		By("Sending a dry-run MCPServer create request through admission")
+		server := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "mcp.x-k8s.io/v1alpha1",
+			"kind":       "MCPServer",
+			"metadata": map[string]interface{}{
+				"name":      "mcplmo-e2e-webhook",
+				"namespace": operandNamespace,
+			},
+			"spec": map[string]interface{}{
+				"source": map[string]interface{}{
+					"type":           "ContainerImage",
+					"containerImage": map[string]interface{}{"ref": "quay.io/containers/kubernetes_mcp_server:latest"},
+				},
+				"config": map[string]interface{}{"port": int64(8080)},
+			},
+		}}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Create(ctx, server.DeepCopy(), client.DryRunAll)).To(Succeed())
+		}, timeout, interval).Should(Succeed())
 	})
 
 	It("should reject an MCPLifecycleOperator CR whose name is not default", func() {
