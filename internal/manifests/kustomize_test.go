@@ -18,6 +18,8 @@ package manifests
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -519,5 +521,133 @@ func TestRewriteCertManagerNamespaceNoopWhenDefault(t *testing.T) {
 		if got != want {
 			t.Errorf("inject-ca-from = %q, want %q", got, want)
 		}
+	}
+}
+
+const managerWithArgsManifest = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: mcp-lifecycle-operator-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: original:latest
+        args:
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+`
+
+func managerArgs(t *testing.T, resources []unstructured.Unstructured) []string {
+	t.Helper()
+	for _, obj := range resources {
+		if obj.GetKind() != "Deployment" {
+			continue
+		}
+		containers, _, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		for _, c := range containers {
+			container, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if container["name"] != "manager" {
+				continue
+			}
+			args, _, _ := unstructured.NestedStringSlice(container, "args")
+			return args
+		}
+	}
+	t.Fatal("no manager container found in resources")
+	return nil
+}
+
+func TestInjectNetworkPolicyPostureArg(t *testing.T) {
+	provider := NewKustomizeProvider(newTestFS(managerWithArgsManifest))
+
+	resources, err := provider.Manifests(context.Background(), Params{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	args := managerArgs(t, resources)
+	want := "--network-policy-default-posture=restricted"
+	found := false
+	count := 0
+	for _, a := range args {
+		if a == want {
+			found = true
+		}
+		if strings.HasPrefix(a, "--network-policy-default-posture") {
+			count++
+		}
+	}
+	if !found {
+		t.Errorf("manager args = %v, want to contain %q", args, want)
+	}
+	if count != 1 {
+		t.Errorf("posture flag appears %d times, want exactly 1 (args=%v)", count, args)
+	}
+	// Existing args are preserved.
+	if !slices.Contains(args, "--leader-elect") {
+		t.Errorf("manager args = %v, want to preserve --leader-elect", args)
+	}
+}
+
+func TestInjectNetworkPolicyPostureArg_ReplacesExisting(t *testing.T) {
+	manifest := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: mcp-lifecycle-operator-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: original:latest
+        args:
+        - --network-policy-default-posture=open
+`
+	provider := NewKustomizeProvider(newTestFS(manifest))
+
+	resources, err := provider.Manifests(context.Background(), Params{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	args := managerArgs(t, resources)
+	count := 0
+	for _, a := range args {
+		if strings.HasPrefix(a, "--network-policy-default-posture") {
+			count++
+			if a != "--network-policy-default-posture=restricted" {
+				t.Errorf("posture flag = %q, want restricted", a)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("posture flag appears %d times, want exactly 1 (args=%v)", count, args)
+	}
+}
+
+func TestInjectNetworkPolicyPostureArg_NoManagerContainer_ReturnsError(t *testing.T) {
+	manifest := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: mcp-lifecycle-operator-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: sidecar
+        image: sidecar:latest
+`
+	provider := NewKustomizeProvider(newTestFS(manifest))
+
+	if _, err := provider.Manifests(context.Background(), Params{}); err == nil {
+		t.Fatal("expected error when no manager container exists")
 	}
 }
