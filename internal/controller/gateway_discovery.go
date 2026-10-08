@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
@@ -170,9 +171,16 @@ func (r *MCPLifecycleOperatorReconciler) resolveGatewayListeners(ctx context.Con
 		return nil, fmt.Errorf("unmarshalling Gateway %s/%s: %w", namespace, name, err)
 	}
 
-	listeners := make([]v1alpha1.ListenerRef, len(gw.Spec.Listeners))
-	for i, l := range gw.Spec.Listeners {
-		listeners[i] = v1alpha1.ListenerRef{Name: string(l.Name)}
+	var listeners []v1alpha1.ListenerRef
+	for _, l := range gw.Spec.Listeners {
+		if l.Hostname == nil || !strings.HasPrefix(string(*l.Hostname), "*.") {
+			continue
+		}
+
+		listeners = append(listeners, v1alpha1.ListenerRef{
+			Name:     string(l.Name),
+			Hostname: string(*l.Hostname),
+		})
 	}
 
 	return listeners, nil
