@@ -39,6 +39,37 @@ type Distribution struct {
 	Version string `json:"version,omitempty"`
 }
 
+// MCPGatewayInfo describes a discovered MCPGatewayExtension and its target Gateway.
+// +kubebuilder:object:generate=true
+type MCPGatewayInfo struct {
+	// Name is the name of the MCPGatewayExtension resource.
+	Name string `json:"name"`
+	// Namespace is the namespace of the MCPGatewayExtension resource.
+	Namespace string `json:"namespace"`
+	// Ready indicates whether the MCPGatewayExtension has a Ready=True condition.
+	Ready bool `json:"ready"`
+	// Gateway is the target Gateway referenced by the MCPGatewayExtension.
+	Gateway GatewayRef `json:"gateway"`
+}
+
+// GatewayRef identifies a Gateway and its listeners.
+// +kubebuilder:object:generate=true
+type GatewayRef struct {
+	// Name is the name of the Gateway resource.
+	Name string `json:"name"`
+	// Namespace is the namespace of the Gateway resource.
+	Namespace string `json:"namespace"`
+	// Listeners are the named listeners on the Gateway.
+	Listeners []ListenerRef `json:"listeners,omitempty"`
+}
+
+// ListenerRef identifies a single listener on a Gateway.
+// +kubebuilder:object:generate=true
+type ListenerRef struct {
+	// Name is the name of the listener.
+	Name string `json:"name"`
+}
+
 // MCPLifecycleOperatorSpec defines the desired state of MCPLifecycleOperator.
 type MCPLifecycleOperatorSpec struct {
 	platformcommon.ManagementSpec `json:",inline"`
@@ -52,6 +83,11 @@ type MCPLifecycleOperatorStatus struct {
 
 	// Distribution is the platform distribution context the module is currently aligned to.
 	Distribution Distribution `json:"distribution,omitempty"`
+
+	// AvailableMCPGateways lists MCPGatewayExtension resources discovered on the
+	// cluster together with the listeners of their target Gateway. Empty when no
+	// MCPGatewayExtension CRD is installed or no instances exist.
+	AvailableMCPGateways []MCPGatewayInfo `json:"availableMCPGateways,omitempty"`
 }
 
 //+kubebuilder:object:root=true

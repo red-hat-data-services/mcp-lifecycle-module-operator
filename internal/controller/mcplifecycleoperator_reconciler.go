@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -36,9 +37,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -57,14 +60,20 @@ import (
 // MCPLifecycleOperatorReconciler reconciles a MCPLifecycleOperator object.
 type MCPLifecycleOperatorReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	Deployer         *deploy.Deployer
-	DynamicClient    dynamic.Interface
-	DiscoveryClient  discovery.DiscoveryInterface
-	ManifestProvider manifests.Provider
-	OperatorVersion  string
-	PodNamespace     string
-	OperandImage     string
+	Scheme                 *runtime.Scheme
+	Deployer               *deploy.Deployer
+	DynamicClient          dynamic.Interface
+	DiscoveryClient        discovery.DiscoveryInterface
+	DynamicInformerFactory dynamicinformer.DynamicSharedInformerFactory
+	ManifestProvider       manifests.Provider
+	OperatorVersion        string
+	PodNamespace           string
+	OperandImage           string
+
+	controller         ctrlcontroller.Controller
+	enqueueComponentCR handler.EventHandler
+	watchMCPGEOnce     sync.Once
+	watchGatewayOnce   sync.Once
 }
 
 const (
@@ -203,6 +212,15 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 	if cr.Spec.ManagementState == platformcommon.Removed {
 		return r.handleRemoved(ctx, cr, cm)
 	}
+
+	gateways, err := r.discoverMCPGateways(ctx)
+	if err != nil {
+		log.Error(err, "Failed to discover MCP gateways, preserving prior status")
+	} else {
+		cr.Status.AvailableMCPGateways = gateways
+	}
+
+	r.tryRegisterGatewayWatches(ctx)
 
 	tlsMinVersion, tlsCipherSuites, tlsGroups, err := fetchTLSConfig(ctx, r.Client)
 	if err != nil {
@@ -668,7 +686,7 @@ func (r *MCPLifecycleOperatorReconciler) patchStatus(ctx context.Context, orig, 
 
 // SetupWithManager registers the controller with the manager.
 func (r *MCPLifecycleOperatorReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	enqueueComponentCR := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
+	r.enqueueComponentCR = handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
 		return []reconcile.Request{
 			{NamespacedName: types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName}},
 		}
@@ -682,21 +700,29 @@ func (r *MCPLifecycleOperatorReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return obj.GetName() == platformConfigName && obj.GetNamespace() == r.PodNamespace
 	})
 
+	gatewayCRDPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		name := obj.GetName()
+		return name == "mcpgatewayextensions.mcp.kuadrant.io" || name == "gateways.gateway.networking.k8s.io"
+	})
+
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.MCPLifecycleOperator{}).
-		Watches(&corev1.ConfigMap{}, enqueueComponentCR, builder.WithPredicates(platformConfigPredicate)).
-		Watches(&appsv1.Deployment{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&corev1.ServiceAccount{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&corev1.Service{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.ClusterRole{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.ClusterRoleBinding{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.Role{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&rbacv1.RoleBinding{}, enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&extv1.CustomResourceDefinition{}, enqueueComponentCR, builder.WithPredicates(managedPredicate))
+		Watches(&corev1.ConfigMap{}, r.enqueueComponentCR, builder.WithPredicates(platformConfigPredicate)).
+		Watches(&appsv1.Deployment{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&corev1.ServiceAccount{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&corev1.Service{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.ClusterRole{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.ClusterRoleBinding{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.Role{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&rbacv1.RoleBinding{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
+		Watches(&extv1.CustomResourceDefinition{}, r.enqueueComponentCR, builder.WithPredicates(predicate.Or(managedPredicate, gatewayCRDPredicate)))
 
 	if isOpenShiftCluster(mgr) {
-		b = b.Watches(&configv1.APIServer{}, enqueueComponentCR)
+		b = b.Watches(&configv1.APIServer{}, r.enqueueComponentCR)
 	}
 
-	return b.Complete(r)
+	var err error
+	r.controller, err = b.Build(r)
+
+	return err
 }

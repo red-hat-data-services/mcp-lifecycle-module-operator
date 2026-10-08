@@ -85,9 +85,19 @@ kind-create: ## Create a Kind cluster with a local registry.
 kind-delete: ## Delete the Kind cluster.
 	kind delete cluster
 
+GATEWAY_API_VERSION ?= v1.6.2
+MCP_GATEWAY_VERSION ?= v0.9.0
+
 .PHONY: e2e-test
 e2e-test: ## Run E2E tests (requires a deployed operator on a running cluster).
 	go test -count=1 ./test/e2e/ -v -timeout 15m
+
+.PHONY: deploy-gateway-crds
+deploy-gateway-crds: kustomize ## Install Gateway API and MCPGatewayExtension CRDs (no controllers).
+	kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml"
+	kubectl wait --for=condition=Established --timeout=120s crd/gateways.gateway.networking.k8s.io
+	$(KUSTOMIZE) build 'https://github.com/Kuadrant/mcp-gateway/config/crd?ref=$(MCP_GATEWAY_VERSION)' | kubectl apply -f -
+	kubectl wait --for=condition=Established --timeout=120s crd/mcpgatewayextensions.mcp.kuadrant.io
 
 ##@ Build
 
