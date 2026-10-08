@@ -30,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -103,7 +104,7 @@ func main() {
 				&v1alpha1.MCPLifecycleOperator{}:  {},
 				&rbacv1.ClusterRole{}:             {Label: managedSelector},
 				&rbacv1.ClusterRoleBinding{}:      {Label: managedSelector},
-				&extv1.CustomResourceDefinition{}: {Label: managedSelector},
+				&extv1.CustomResourceDefinition{}: {},
 			},
 		},
 	})
@@ -116,6 +117,7 @@ func main() {
 
 	dynClient := dynamic.NewForConfigOrDie(cfg)
 	discoveryClient := discovery.NewDiscoveryClientForConfigOrDie(cfg)
+	dynInformerFactory := dynamicinformer.NewDynamicSharedInformerFactory(dynClient, 0)
 
 	deployer := deploy.NewDeployer(
 		deploy.WithFieldOwner(v1alpha1.MCPLifecycleOperatorServiceName),
@@ -138,15 +140,16 @@ func main() {
 	}
 
 	reconciler := &controller.MCPLifecycleOperatorReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Deployer:         deployer,
-		DynamicClient:    dynClient,
-		DiscoveryClient:  discoveryClient,
-		ManifestProvider: manifestProvider,
-		OperatorVersion:  operatorVersion,
-		PodNamespace:     podNamespace,
-		OperandImage:     operandImage,
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		Deployer:               deployer,
+		DynamicClient:          dynClient,
+		DiscoveryClient:        discoveryClient,
+		DynamicInformerFactory: dynInformerFactory,
+		ManifestProvider:       manifestProvider,
+		OperatorVersion:        operatorVersion,
+		PodNamespace:           podNamespace,
+		OperandImage:           operandImage,
 	}
 
 	if err := reconciler.SetupWithManager(mgr); err != nil {
