@@ -71,6 +71,12 @@ The operator uses environment variables for operand configuration:
 
 In a full ODH/RHOAI deployment, `RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE` is injected by the platform. When unset, the default image baked into the operand manifests is used.
 
+### NetworkPolicy posture
+
+In RHOAI/ODH the operand runs under a restricted (deny-by-default ingress)
+NetworkPolicy posture. See [docs/network-policy-posture.md](docs/network-policy-posture.md)
+for what this means and how to open an ingress path for a specific MCP server.
+
 ### Create the MCPLifecycleOperator CR
 
 ```yaml
