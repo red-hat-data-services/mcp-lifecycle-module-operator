@@ -68,6 +68,8 @@ type GatewayRef struct {
 type ListenerRef struct {
 	// Name is the name of the listener.
 	Name string `json:"name"`
+	// Hostname is the wildcard hostname of the listener.
+	Hostname string `json:"hostname"`
 }
 
 // MCPLifecycleOperatorSpec defines the desired state of MCPLifecycleOperator.

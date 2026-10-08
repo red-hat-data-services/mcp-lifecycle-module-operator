@@ -87,8 +87,8 @@ var _ = Describe("Gateway Discovery", func() {
 				HaveField("Gateway.Name", "test-gw"),
 				HaveField("Gateway.Namespace", gatewayTestNamespace),
 				HaveField("Gateway.Listeners", ContainElements(
-					HaveField("Name", "mcp"),
-					HaveField("Name", "mcps"),
+					SatisfyAll(HaveField("Name", "mcp"), HaveField("Hostname", "*.mcp.example.com")),
+					SatisfyAll(HaveField("Name", "mcps"), HaveField("Hostname", "*.mcps.example.com")),
 				)),
 			)))
 		}, timeout, interval).Should(Succeed())
@@ -156,7 +156,7 @@ func newGatewayResource(namespace, name string, listeners ...string) *unstructur
 	for i, l := range listeners {
 		listenerList[i] = map[string]interface{}{
 			"name":     l,
-			"hostname": l + ".example.com",
+			"hostname": "*." + l + ".example.com",
 			"port":     int64(80),
 			"protocol": "HTTP",
 		}
