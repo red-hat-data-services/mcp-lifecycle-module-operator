@@ -30,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -49,6 +50,12 @@ import (
 
 var (
 	scheme = runtime.NewScheme()
+
+	// stripManagedFields removes managed fields before an object is committed to
+	// the cache. It is reused by stripCRDSchema because a per-object Transform
+	// overrides the cache's DefaultTransform, so CRDs would otherwise lose the
+	// managed-field stripping applied to every other cached type.
+	stripManagedFields = cache.TransformStripManagedFields()
 )
 
 func init() {
@@ -59,6 +66,37 @@ func init() {
 	utilruntime.Must(rbacv1.AddToScheme(scheme))
 	utilruntime.Must(corev1.AddToScheme(scheme))
 	utilruntime.Must(configv1.Install(scheme))
+}
+
+// stripCRDSchema is a cache transform for CustomResourceDefinitions. The
+// controller only reads a CRD's metadata.name (to detect the gateway CRDs and
+// trigger watch registration), so the per-version OpenAPI v3 schema - by far the
+// largest part of a CRD - is dropped before the object is committed to the
+// cache. This keeps every CRD watchable (the gateway CRDs carry no managed-by
+// label, so the CRD cache cannot be label-filtered) while avoiding holding every
+// cluster CRD's full schema in memory. Managed fields are stripped as well,
+// because a per-object Transform overrides the cache's DefaultTransform.
+//
+// Caution: because this mutates the cached copy, a cached CRD read (r.Get on a
+// CustomResourceDefinition) returns a nil Spec.Versions[].Schema. Any future
+// code that needs a CRD's schema, conversion, or served/storage version detail
+// must read it uncached (e.g. via the API reader), not through the client cache.
+func stripCRDSchema(obj interface{}) (interface{}, error) {
+	obj, err := stripManagedFields(obj)
+	if err != nil {
+		return obj, err
+	}
+
+	crd, ok := obj.(*extv1.CustomResourceDefinition)
+	if !ok {
+		return obj, nil
+	}
+
+	for i := range crd.Spec.Versions {
+		crd.Spec.Versions[i].Schema = nil
+	}
+
+	return crd, nil
 }
 
 func main() {
@@ -81,9 +119,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Cluster-scoped resources (ClusterRole, ClusterRoleBinding, CRD) cannot be
+	// Cluster-scoped resources (ClusterRole, ClusterRoleBinding) cannot be
 	// namespace-scoped, so we filter by the managed-resource label to avoid
-	// caching every such object in the cluster.
+	// caching every such object in the cluster. CRDs are handled differently
+	// (see the ByObject entry below): the gateway CRDs we watch carry no
+	// managed-by label, so the CRD cache cannot be label-filtered and instead
+	// strips each CRD's bulky schema to keep memory down.
 	managedSelector := labels.SelectorFromSet(labels.Set{
 		odhLabels.PlatformPartOf: v1alpha1.MCPLifecycleOperatorServiceName,
 	})
@@ -98,12 +139,12 @@ func main() {
 			DefaultNamespaces: map[string]cache.Config{
 				podNamespace: {},
 			},
-			DefaultTransform: cache.TransformStripManagedFields(),
+			DefaultTransform: stripManagedFields,
 			ByObject: map[client.Object]cache.ByObject{
 				&v1alpha1.MCPLifecycleOperator{}:  {},
 				&rbacv1.ClusterRole{}:             {Label: managedSelector},
 				&rbacv1.ClusterRoleBinding{}:      {Label: managedSelector},
-				&extv1.CustomResourceDefinition{}: {Label: managedSelector},
+				&extv1.CustomResourceDefinition{}: {Transform: stripCRDSchema},
 			},
 		},
 	})
@@ -116,6 +157,7 @@ func main() {
 
 	dynClient := dynamic.NewForConfigOrDie(cfg)
 	discoveryClient := discovery.NewDiscoveryClientForConfigOrDie(cfg)
+	dynInformerFactory := dynamicinformer.NewDynamicSharedInformerFactory(dynClient, 0)
 
 	deployer := deploy.NewDeployer(
 		deploy.WithFieldOwner(v1alpha1.MCPLifecycleOperatorServiceName),
@@ -138,15 +180,16 @@ func main() {
 	}
 
 	reconciler := &controller.MCPLifecycleOperatorReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Deployer:         deployer,
-		DynamicClient:    dynClient,
-		DiscoveryClient:  discoveryClient,
-		ManifestProvider: manifestProvider,
-		OperatorVersion:  operatorVersion,
-		PodNamespace:     podNamespace,
-		OperandImage:     operandImage,
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		Deployer:               deployer,
+		DynamicClient:          dynClient,
+		DiscoveryClient:        discoveryClient,
+		DynamicInformerFactory: dynInformerFactory,
+		ManifestProvider:       manifestProvider,
+		OperatorVersion:        operatorVersion,
+		PodNamespace:           podNamespace,
+		OperandImage:           operandImage,
 	}
 
 	if err := reconciler.SetupWithManager(mgr); err != nil {
