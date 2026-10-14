@@ -86,7 +86,7 @@ kind-delete: ## Delete the Kind cluster.
 	kind delete cluster
 
 GATEWAY_API_VERSION ?= v1.6.2
-MCP_GATEWAY_VERSION ?= v0.9.0
+MCP_GATEWAY_VERSION ?= v1.0.1
 
 .PHONY: e2e-test
 e2e-test: ## Run E2E tests (requires a deployed operator on a running cluster).
