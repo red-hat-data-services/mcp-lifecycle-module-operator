@@ -25,10 +25,12 @@ import (
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -36,7 +38,13 @@ import (
 	v1alpha1 "github.com/opendatahub-io/mcp-lifecycle-module-operator/api/v1alpha1"
 )
 
-var k8sClient client.Client
+var (
+	k8sClient client.Client
+	// restConfig is the loaded kubeconfig, kept so specs can build a clientset for
+	// subresource requests (e.g. the Service proxy used to probe the operand metrics
+	// endpoint) that the controller-runtime client does not expose.
+	restConfig *rest.Config
+)
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -50,6 +58,7 @@ var _ = BeforeSuite(func() {
 	Expect(admissionv1.AddToScheme(scheme)).To(Succeed())
 	Expect(corev1.AddToScheme(scheme)).To(Succeed())
 	Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+	Expect(discoveryv1.AddToScheme(scheme)).To(Succeed())
 	Expect(networkingv1.AddToScheme(scheme)).To(Succeed())
 	Expect(extv1.AddToScheme(scheme)).To(Succeed())
 	Expect(v1alpha1.AddToScheme(scheme)).To(Succeed())
@@ -59,6 +68,7 @@ var _ = BeforeSuite(func() {
 		&clientcmd.ConfigOverrides{},
 	).ClientConfig()
 	Expect(err).NotTo(HaveOccurred())
+	restConfig = cfg
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	Expect(err).NotTo(HaveOccurred())
