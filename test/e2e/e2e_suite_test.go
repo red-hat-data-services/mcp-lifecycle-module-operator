@@ -102,6 +102,19 @@ var _ = BeforeSuite(func() {
 	waitForOperandReady(ctx)
 })
 
+var _ = BeforeEach(func() {
+	standalone, err := CurrentSpecReport().MatchesLabelFilter("standalone")
+	Expect(err).NotTo(HaveOccurred())
+	if !standalone {
+		return
+	}
+	cr := &v1alpha1.MCPLifecycleOperator{}
+	Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: "default"}, cr)).To(Succeed())
+	if len(cr.OwnerReferences) != 0 {
+		Skip("standalone tests require an unowned MCPLifecycleOperator singleton; this installation has a parent owner")
+	}
+})
+
 func prepareTest() {
 	waitForOperandReady(context.Background())
 }

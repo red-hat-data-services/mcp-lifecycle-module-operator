@@ -18,6 +18,8 @@ Run `make help` for the full list. Key targets:
 | `make build` | Build the manager binary (runs codegen + fmt + vet first) |
 | `make test` | Run unit tests with coverage (runs codegen first) |
 | `make unit-test` | Run unit tests only (no codegen prerequisites) |
+| `make verify` | Check local codegen, formatting, dependencies, and updater unit tests |
+| `make verify-operand-manifests` | Regenerate and compare operand outputs from saved source/image pins (network required) |
 | `make manifests` | Generate CRD and RBAC YAML from kubebuilder markers |
 | `make generate` | Generate DeepCopy implementations |
 | `make docker-build` | Build the container image |
@@ -63,6 +65,8 @@ make deploy IMAGE_REGISTRY=localhost:5001 IMAGE_TAG=dev
 kubectl apply -f config/samples/mcplifecycleoperator.yaml
 ```
 
+`make deploy` uses the operand digest embedded in the installer by default and clears any previous deployment override. To use a mirrored or custom operand image, pass `MCPLO_OPERAND_IMAGE=<image-reference>`. Platform-provided `RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE` overrides remain supported at runtime.
+
 ## Code Generation
 
 This project uses [kubebuilder](https://book.kubebuilder.io/) markers for code generation:
@@ -79,22 +83,36 @@ The operand (MCP Lifecycle Operator) manifests are vendored at `internal/control
 To update them:
 
 ```bash
-# From main branch (default)
+# Use main or the current release branch automatically
 make update-operand-manifests
 
-# From a specific tag or branch
+# Override with a specific branch, tag, or full commit SHA
 make update-operand-manifests MCPLO_REF=v0.2.0
 ```
 
-A GitHub Actions workflow (`.github/workflows/update-operand-manifests.yml`) runs this weekly and opens a PR if manifests changed.
+The Go updater in `tools/source-update` regenerates the copied configuration and embedded installer from one immutable source commit, without adding MCPLO to this module's Go dependencies. During `update`, it resolves the public Quay tag named for that full source commit, validates the OCI index digest and every runnable platform image's source/repository labels, then records the selected index reference and source SHA in `operand-image.json`. Each runnable platform must supply at least one of `git.commit`, `org.opencontainers.image.revision`, or `vcs-ref`; every supplied recognized source label must equal the full source commit (empty or conflicting values are rejected). The `git.url` repository label remains required. A missing published build or mismatched source fails before files are installed. Configuration, installer and image record are installed together, with rollback on failure.
+
+The tag is mutable, so `make verify-operand-manifests` uses the committed source/image record and does not look up the tag again. It regenerates from that exact source and image and byte-compares the config and installer output. It still fetches pinned source and Go tooling; it is not an offline or disconnected-cluster test. Update-time checks validate published labels and registry content hashes, not cryptographic signatures or provenance attestations. On release branches, use the matching MCPLO release branch rather than `main`.
+
+A GitHub Actions workflow (`.github/workflows/update-operand-manifests.yml`) runs daily at 06:00 UTC on `main` and opens a PR for source/image record or generated-file changes. Release updates currently require manual dispatch on the release branch.
 
 ## Testing
+
+### Verification
+
+`make verify` checks local generated code, formatting, module dependencies, and updater unit tests without fetching and regenerating MCPLO source. Cold-cache tool installation and module resolution can still require network access.
+
+Run `make verify-operand-manifests` explicitly to check copied operand configuration and the embedded installer against the saved source/image pins. This fetches the pinned source and builds checkout-local generator tools; it does not advance the pins. CI runs both verification targets.
 
 ### Unit tests
 
 ```bash
 make unit-test
-# or with codegen prerequisites:
+```
+
+`make test` runs unit tests with code generation, formatting, vet, and coverage. Both unit-test targets include the source updater and exclude live-cluster E2E tests:
+
+```bash
 make test
 ```
 
@@ -105,17 +123,16 @@ Set `KUBECONFIG` to your test cluster. Deploy the module operator and prepare a 
 The suite discovers the installation namespace from the module operator Deployment labels. Set `SYSTEM_NAMESPACE` to select a namespace explicitly when needed, such as when multiple installations exist. Discovery fails if no installation is found, multiple installations match, or the API request fails.
 
 ```bash
-# Kind: run all checks.
+# Run all checks compatible with the prepared installation.
 make e2e-test
-
-# RHOAI: run all compatible checks.
-make e2e-test E2E_TEST_ARGS='-ginkgo.label-filter=!standalone'
 ```
+
+The suite automatically skips standalone tests when the singleton has an owner reference, as it does on RHOAI and ODH. An unowned singleton runs the full suite. No label filter is required.
 
 Labels:
 
 - `lifecycle`: changes the singleton's management state, disrupts the operand Pod, or deletes the singleton. Requires a disposable installation and exclusive access to the component. Each test restores readiness during cleanup.
-- `standalone`: deletes the singleton and checks operand garbage collection. Requires an installation without a parent controller that recreates the singleton. Exclude this label on RHOAI.
+- `standalone`: deletes the singleton and checks operand garbage collection. Automatically skipped when the singleton has a parent owner.
 
 Unlabeled checks leave the singleton unchanged. Use one Ginkgo process. The suite leaves the installation running after tests.
 
@@ -128,8 +145,8 @@ The suite timeout defaults to 15 minutes. Override it with `E2E_TEST_TIMEOUT`, f
 GitHub Actions workflows run on this repository:
 
 - **E2E Tests** (`.github/workflows/e2e.yml`) - runs on PRs and pushes to `main`. Stands up a Kind cluster, deploys the operator, and runs E2E tests.
-- **Verify** (`.github/workflows/verify.yml`) - runs on PRs. Checks formatting, linting, and codegen freshness.
-- **Update Operand Manifests** (`.github/workflows/update-operand-manifests.yml`) - weekly cron and manual dispatch. Re-vendors operand manifests and opens a PR if they changed.
+- **Verify** (`.github/workflows/verify.yml`) - runs on PRs. Runs `make verify` and explicitly runs `make verify-operand-manifests` for pinned-source regeneration and drift checking.
+- **Update Operand Manifests** (`.github/workflows/update-operand-manifests.yml`) - daily cron and manual dispatch. Updates the source/image record and generated operand files together.
 
 Additionally, Tekton PipelineRuns in `.tekton/` handle Konflux/Red Hat builds for pull requests and pushes.
 
