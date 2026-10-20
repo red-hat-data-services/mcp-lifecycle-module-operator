@@ -4,32 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Tag or branch of the midstream fork to use"
+        description: "MCPLO branch, tag, or SHA; defaults to workflow branch"
         required: false
-        default: "main"
+        default: ""
   schedule:
     - cron: "0 6 * * *"
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   update-manifests:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - name: Generate GitHub App Token
-        id: generate-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.ODH_RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.ODH_RELEASE_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ steps.generate-token.outputs.token }}
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -37,18 +27,32 @@ jobs:
           go-version-file: go.mod
 
       - name: Update operand manifests
+        id: update
         env:
-          MCPLO_REF: ${{ github.event.inputs.ref || 'main' }}
-        run: make update-operand-manifests MCPLO_REF="$MCPLO_REF"
+          MCPLO_REF: ${{ github.event.inputs.ref || github.ref_name }}
+        run: make update-operand-manifests
 
       - name: Check for changes
         id: changes
         run: |
-          if git diff --quiet internal/controller/resources/mcp-lifecycle-operator.yaml; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
+          paths="$(git status --porcelain --untracked-files=all -- \
+            operand-image.json config/manifests/mcp-lifecycle-operator \
+            internal/controller/resources/mcp-lifecycle-operator.yaml)"
+          if [[ -n "$paths" ]]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Generate GitHub App Token
+        id: generate-token
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.ODH_RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.ODH_RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Create Pull Request
         if: steps.changes.outputs.changed == 'true'
@@ -57,7 +61,11 @@ jobs:
           token: ${{ steps.generate-token.outputs.token }}
           commit-message: "chore: update operand manifests from midstream"
           title: "chore: update operand manifests from midstream"
+          # tools/source-update writes these outputs to GITHUB_OUTPUT in the update step.
           body: |
-            Automated update of operand manifests from `${{ github.event.inputs.ref || 'main' }}` branch of the midstream fork.
-          branch: automated/update-operand-manifests
+            Synchronized operand source:
+            Commit: `${{ steps.update.outputs.source_commit }}`
+            Operand image: `${{ steps.update.outputs.operand_image }}`
+          branch: automated/update-operand-manifests-${{ github.ref_name }}
+          base: ${{ github.ref_name }}
           delete-branch: true

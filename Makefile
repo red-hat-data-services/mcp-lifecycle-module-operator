@@ -10,10 +10,12 @@ COMMON_BUILD_ARGS += -trimpath -ldflags="-s -w"
 OUTPUT ?= ./bin/manager
 CLEAN_TARGETS ?= $(OUTPUT)
 
-MCPLO_OPERAND_IMAGE ?= quay.io/opendatahub/odh-mcp-lifecycle-operator:odh-stable
+# Leave empty to use the source-aligned digest from the embedded installer.
+MCPLO_OPERAND_IMAGE ?=
 
-MCPLO_REPO ?= https://github.com/opendatahub-io/mcp-lifecycle-operator
-MCPLO_REF ?= main
+# Match the source release branch; development branches default to main.
+MCPLO_REF ?= $(shell git branch --show-current 2>/dev/null | grep -E '^main$$|^rhoai-' || printf main)
+export MCPLO_REF
 
 CONTAINER_TOOL ?= docker
 
@@ -62,6 +64,7 @@ tidy: ## Tidy Go dependencies.
 
 .PHONY: verify
 verify: manifests generate fmt tidy ## Verify generated code, formatting, and dependencies are up-to-date.
+	go test ./tools/source-update
 	@if ! git diff --exit-code --name-only || [ -n "$$(git ls-files --others --exclude-standard)" ]; then \
 		echo "ERROR: generated files are out of date. Run 'make manifests generate fmt' and commit the result."; \
 		echo -e '\nDifference:\n'; \
@@ -73,11 +76,11 @@ verify: manifests generate fmt tidy ## Verify generated code, formatting, and de
 
 .PHONY: test
 test: manifests generate fmt vet ## Run unit tests with coverage.
-	go test ./api/... ./internal/... ./cmd/... -coverprofile cover.out
+	go test ./api/... ./internal/... ./cmd/... ./tools/source-update -coverprofile cover.out
 
 .PHONY: unit-test
 unit-test: ## Run unit tests (no codegen prerequisites).
-	go test ./api/... ./internal/... ./cmd/...
+	go test ./api/... ./internal/... ./cmd/... ./tools/source-update
 
 .PHONY: kind-create
 kind-create: ## Create a Kind cluster with a local registry.
@@ -141,7 +144,7 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster.
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
 	kubectl set env -n mcp-lifecycle-module-operator-system \
 		deploy/mcp-lifecycle-module-operator-controller-manager \
-		RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE=$(MCPLO_OPERAND_IMAGE)
+		RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE$(if $(strip $(MCPLO_OPERAND_IMAGE)),=$(MCPLO_OPERAND_IMAGE),-)
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster.
@@ -150,17 +153,12 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster.
 ##@ Operand Manifests
 
 .PHONY: update-operand-manifests
-update-operand-manifests: ## Vendor MCPLO manifests.
-	$(eval TMP := $(shell mktemp -d))
-	git clone --depth 1 --branch "$(MCPLO_REF)" "$(MCPLO_REPO)" "$(TMP)"
-	# For productization, we need to have the full kustomize ready manifests from MCPLO
-	rm -rf config/manifests/mcp-lifecycle-operator
-	mkdir -p config/manifests/mcp-lifecycle-operator
-	cp -r "$(TMP)/config/." config/manifests/mcp-lifecycle-operator/
-	# Update MCPLO manifests
-	$(MAKE) -C "$(TMP)" -f Makefile-ocp.mk build-installer
-	cp "$(TMP)/dist/install.yaml" internal/controller/resources/mcp-lifecycle-operator.yaml
-	rm -rf "$(TMP)"
+update-operand-manifests: ## Synchronize operand manifests and image from one source commit.
+	go run ./tools/source-update update
+
+.PHONY: verify-operand-manifests
+verify-operand-manifests: ## Verify operand outputs from saved source/image pins (fetches source and Go tooling).
+	go run ./tools/source-update verify
 
 RPM_LOCKFILE_IMAGE ?= rpm-lockfile-prototype:local
 
