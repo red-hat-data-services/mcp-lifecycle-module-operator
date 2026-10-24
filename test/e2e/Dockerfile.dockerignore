@@ -1,0 +1,9 @@
+# Local builds use this file; our Konflux instance still uses the root .dockerignore
+# until https://github.com/konflux-ci/konflux-build-cli/pull/208 is deployed.
+**
+!**/*.go
+!go.mod
+!go.sum
+!api/
+!internal/
+!test/
