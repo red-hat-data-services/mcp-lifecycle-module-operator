@@ -5,6 +5,7 @@
     "github>konflux-ci/mintmaker-presets:refresh-rpm-lockfiles",
     "security:only-security-updates"
   ],
+  "baseBranches": ["rhoai-3.5", "rhoai-3.6"],
   "enabledManagers": ["dockerfile", "gomod", "rpm", "rpm-lockfile"],
   "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
@@ -14,7 +15,7 @@
       "enabled": false
     },
     {
-      "description": "Re-enable all Dockerfile updates on rhoai release branches; security:only-security-updates disables regular bumps and the Konflux preset allows digest updates only",
+      "description": "Re-enable Dockerfile digest updates on rhoai release branches; security:only-security-updates disables regular updates while the Konflux preset allows digest updates only",
       "matchBaseBranches": ["/^rhoai-/"],
       "matchManagers": ["dockerfile"],
       "enabled": true
