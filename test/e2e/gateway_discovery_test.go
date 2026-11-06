@@ -1,3 +1,5 @@
+//go:build e2e
+
 /*
 Copyright 2026.
 
@@ -18,130 +20,104 @@ package e2e
 
 import (
 	"context"
+	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	k8serr "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/opendatahub-io/mcp-lifecycle-module-operator/api/v1alpha1"
 )
 
 const (
-	gatewayTestNamespace = "mcplmo-e2e-gw"
-	mcpGatewayExtCRD     = "mcpgatewayextensions.mcp.kuadrant.io"
-	gatewayCRD           = "gateways.gateway.networking.k8s.io"
+	mcpGatewayExtCRD = "mcpgatewayextensions.mcp.kuadrant.io"
+	gatewayCRD       = "gateways.gateway.networking.k8s.io"
 )
 
-var _ = Describe("Gateway Discovery", func() {
+// prepareGatewayTest skips when the optional gateway CRDs are absent and
+// otherwise returns a fixture namespace that is deleted after the test.
+func prepareGatewayTest(t *testing.T) string {
+	t.Helper()
+	prepareSuite(t)
+	ctx := context.Background()
+	if !crdInstalled(ctx, mcpGatewayExtCRD) || !crdInstalled(ctx, gatewayCRD) {
+		t.Skip("MCPGatewayExtension or Gateway CRD not installed")
+	}
+
+	waitForOperandReady(t, ctx)
+	return createTestNamespace(t, ctx, "mcplmo-e2e-gw-")
+}
+
+// TestE2EGatewayDiscovery verifies MCPGatewayExtension and Gateway resources are discovered in status.
+func TestE2EGatewayDiscovery(t *testing.T) {
+	gatewayTestNamespace := prepareGatewayTest(t)
+	g := NewWithT(t)
 	ctx := context.Background()
 
-	BeforeEach(func() {
-		if !crdInstalled(ctx, mcpGatewayExtCRD) || !crdInstalled(ctx, gatewayCRD) {
-			Skip("MCPGatewayExtension or Gateway CRD not installed")
-		}
+	gw := newGatewayResource(gatewayTestNamespace, "test-gw", "mcp", "mcps")
+	g.Expect(k8sClient.Create(ctx, gw)).To(Succeed())
 
-		ensureNamespace(ctx, gatewayTestNamespace)
-	})
+	mcpge := newMCPGatewayExtensionResource(gatewayTestNamespace, "test-ext", "test-gw", gatewayTestNamespace, "mcp")
+	g.Expect(k8sClient.Create(ctx, mcpge)).To(Succeed())
 
-	AfterEach(func() {
-		cr := &v1alpha1.MCPLifecycleOperator{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: v1alpha1.MCPLifecycleOperatorInstanceName,
-			},
-		}
-		err := k8sClient.Delete(ctx, cr)
-		if err != nil && !k8serr.IsNotFound(err) {
-			Fail("failed to delete MCPLifecycleOperator CR: " + err.Error())
-		}
+	t.Log("Verifying status.availableMCPGateways contains the discovered gateway")
+	g.Eventually(func(g Gomega) {
+		cr := &v1alpha1.MCPLifecycleOperator{}
+		g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: v1alpha1.MCPLifecycleOperatorInstanceName,
+		}, cr)).To(Succeed())
 
-		deleteGatewayTestResources(ctx)
-	})
+		g.Expect(cr.Status.AvailableMCPGateways).To(ContainElement(SatisfyAll(
+			HaveField("Name", "test-ext"),
+			HaveField("Namespace", gatewayTestNamespace),
+			HaveField("Gateway.Name", "test-gw"),
+			HaveField("Gateway.Namespace", gatewayTestNamespace),
+			HaveField("Gateway.Listeners", ContainElements(
+				SatisfyAll(HaveField("Name", "mcp"), HaveField("Hostname", "*.mcp.example.com")),
+				SatisfyAll(HaveField("Name", "mcps"), HaveField("Hostname", "*.mcps.example.com")),
+			)),
+		)))
+	}, timeout, interval).Should(Succeed())
+}
 
-	It("should discover MCPGatewayExtension and Gateway resources in status", func() {
-		gw := newGatewayResource(gatewayTestNamespace, "test-gw", "mcp", "mcps")
-		Expect(k8sClient.Create(ctx, gw)).To(Succeed())
+// TestE2EGatewayExtensionRemoval verifies status is updated when an MCPGatewayExtension is removed.
+func TestE2EGatewayExtensionRemoval(t *testing.T) {
+	gatewayTestNamespace := prepareGatewayTest(t)
+	g := NewWithT(t)
+	ctx := context.Background()
 
-		mcpge := newMCPGatewayExtensionResource(gatewayTestNamespace, "test-ext", "test-gw", gatewayTestNamespace, "mcp")
-		Expect(k8sClient.Create(ctx, mcpge)).To(Succeed())
+	gw := newGatewayResource(gatewayTestNamespace, "test-gw", "mcp")
+	g.Expect(k8sClient.Create(ctx, gw)).To(Succeed())
 
-		createManagedCR(ctx)
-		waitForOperandReady(ctx)
+	mcpge := newMCPGatewayExtensionResource(gatewayTestNamespace, "test-ext", "test-gw", gatewayTestNamespace, "mcp")
+	g.Expect(k8sClient.Create(ctx, mcpge)).To(Succeed())
 
-		By("Verifying status.availableMCPGateways contains the discovered gateway")
-		Eventually(func(g Gomega) {
-			cr := &v1alpha1.MCPLifecycleOperator{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: v1alpha1.MCPLifecycleOperatorInstanceName,
-			}, cr)).To(Succeed())
+	t.Log("Waiting for the gateway to appear in status")
+	g.Eventually(func(g Gomega) {
+		cr := &v1alpha1.MCPLifecycleOperator{}
+		g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: v1alpha1.MCPLifecycleOperatorInstanceName,
+		}, cr)).To(Succeed())
+		g.Expect(cr.Status.AvailableMCPGateways).To(ContainElement(SatisfyAll(
+			HaveField("Name", "test-ext"),
+			HaveField("Namespace", gatewayTestNamespace),
+		)))
+	}, timeout, interval).Should(Succeed())
 
-			g.Expect(cr.Status.AvailableMCPGateways).To(ContainElement(SatisfyAll(
-				HaveField("Name", "test-ext"),
-				HaveField("Namespace", gatewayTestNamespace),
-				HaveField("Gateway.Name", "test-gw"),
-				HaveField("Gateway.Namespace", gatewayTestNamespace),
-				HaveField("Gateway.Listeners", ContainElements(
-					SatisfyAll(HaveField("Name", "mcp"), HaveField("Hostname", "*.mcp.example.com")),
-					SatisfyAll(HaveField("Name", "mcps"), HaveField("Hostname", "*.mcps.example.com")),
-				)),
-			)))
-		}, timeout, interval).Should(Succeed())
-	})
+	t.Log("Deleting the MCPGatewayExtension")
+	g.Expect(k8sClient.Delete(ctx, mcpge)).To(Succeed())
 
-	It("should update status when MCPGatewayExtension is removed", func() {
-		gw := newGatewayResource(gatewayTestNamespace, "test-gw", "mcp")
-		Expect(k8sClient.Create(ctx, gw)).To(Succeed())
-
-		mcpge := newMCPGatewayExtensionResource(gatewayTestNamespace, "test-ext", "test-gw", gatewayTestNamespace, "mcp")
-		Expect(k8sClient.Create(ctx, mcpge)).To(Succeed())
-
-		createManagedCR(ctx)
-		waitForOperandReady(ctx)
-
-		By("Waiting for the gateway to appear in status")
-		Eventually(func(g Gomega) {
-			cr := &v1alpha1.MCPLifecycleOperator{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: v1alpha1.MCPLifecycleOperatorInstanceName,
-			}, cr)).To(Succeed())
-			g.Expect(cr.Status.AvailableMCPGateways).To(HaveLen(1))
-		}, timeout, interval).Should(Succeed())
-
-		By("Deleting the MCPGatewayExtension")
-		Expect(k8sClient.Delete(ctx, mcpge)).To(Succeed())
-
-		By("Verifying status.availableMCPGateways becomes empty")
-		Eventually(func(g Gomega) {
-			cr := &v1alpha1.MCPLifecycleOperator{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: v1alpha1.MCPLifecycleOperatorInstanceName,
-			}, cr)).To(Succeed())
-			g.Expect(cr.Status.AvailableMCPGateways).To(BeEmpty())
-		}, timeout, interval).Should(Succeed())
-	})
-})
-
-func ensureNamespace(ctx context.Context, name string) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-	err := k8sClient.Create(ctx, ns)
-	if err == nil {
-		return
-	}
-	if !k8serr.IsAlreadyExists(err) {
-		Fail("failed to create test namespace: " + err.Error())
-	}
-	Eventually(func(g Gomega) {
-		existing := &corev1.Namespace{}
-		g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, existing)).To(Succeed())
-		g.Expect(existing.Status.Phase).To(Equal(corev1.NamespaceActive))
+	t.Log("Verifying status.availableMCPGateways becomes empty")
+	g.Eventually(func(g Gomega) {
+		cr := &v1alpha1.MCPLifecycleOperator{}
+		g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: v1alpha1.MCPLifecycleOperatorInstanceName,
+		}, cr)).To(Succeed())
+		g.Expect(cr.Status.AvailableMCPGateways).NotTo(ContainElement(SatisfyAll(
+			HaveField("Name", "test-ext"),
+			HaveField("Namespace", gatewayTestNamespace),
+		)))
 	}, timeout, interval).Should(Succeed())
 }
 
@@ -188,22 +164,4 @@ func newMCPGatewayExtensionResource(namespace, name, gwName, gwNamespace, sectio
 			},
 		},
 	}}
-}
-
-func deleteGatewayTestResources(ctx context.Context) {
-	mcpge := &unstructured.Unstructured{}
-	mcpge.SetGroupVersionKind(schema.GroupVersionKind{
-		Group: "mcp.kuadrant.io", Version: "v1", Kind: "MCPGatewayExtension",
-	})
-	_ = k8sClient.DeleteAllOf(ctx, mcpge, &client.DeleteAllOfOptions{
-		ListOptions: client.ListOptions{Namespace: gatewayTestNamespace},
-	})
-
-	gw := &unstructured.Unstructured{}
-	gw.SetGroupVersionKind(schema.GroupVersionKind{
-		Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway",
-	})
-	_ = k8sClient.DeleteAllOf(ctx, gw, &client.DeleteAllOfOptions{
-		ListOptions: client.ListOptions{Namespace: gatewayTestNamespace},
-	})
 }

@@ -6,7 +6,7 @@ Act like a professional software developer and engineer. Adhere to architecture,
 
 ## Project Overview
 
-Kubernetes operator (controller-runtime) for managing the lifecycle of the [MCP Lifecycle Operator](https://github.com/opendatahub-io/mcp-lifecycle-operator) as a module within [Open Data Hub](https://opendatahub.io/) (ODH). Written in Go, uses Ginkgo/Gomega for tests.
+Kubernetes operator (controller-runtime) for managing the lifecycle of the [MCP Lifecycle Operator](https://github.com/opendatahub-io/mcp-lifecycle-operator) as a module within [Open Data Hub](https://opendatahub.io/) (ODH). Written in Go, uses Go tests with Gomega assertions.
 
 This is a **module operator** - it does not implement business logic. Its sole job is to deploy, reconcile, and garbage-collect the operand based on a `MCPLifecycleOperator` CR and a platform-managed ConfigMap. It follows **v2 of the [Onboarding Guide for ODH Operator Modules](https://docs.google.com/document/d/1FgN_U-6XH8M-Mu6XNeldUlTPsnw7UyPCWg5NVJJdYnw)**.
 
@@ -19,7 +19,7 @@ Before committing, test locally following the table below:
 | `*.go` files | `make unit-test` | Unit tests (fast, no codegen) |
 | `*.go` files | `make test` | Unit tests with codegen + fmt + vet |
 | `api/` types or RBAC markers | `make manifests generate` | Regenerate CRDs, DeepCopy, and RBAC |
-| Significant changes | `make e2e-test` | E2E tests (Kind cluster required - see [CONTRIBUTING.md](CONTRIBUTING.md) for setup) |
+| Significant changes or E2E changes | `make e2e-test` | Prepared dedicated cluster; see [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites and test selection. |
 
 ## Key Architecture Rules
 
