@@ -8,7 +8,7 @@ COMMON_BUILD_ARGS += -trimpath -ldflags="-s -w"
 OUTPUT ?= ./bin/manager
 CLEAN_TARGETS ?= $(OUTPUT)
 
-MCPLO_OPERAND_IMAGE ?= quay.io/opendatahub/odh-mcp-lifecycle-operator:odh-stable
+MCPLO_OPERAND_IMAGE ?= quay.io/rhoai/odh-mcp-lifecycle-operator-rhel9:rhoai-3.5
 
 MCPLO_REPO ?= https://github.com/opendatahub-io/mcp-lifecycle-operator
 MCPLO_REF ?= main
