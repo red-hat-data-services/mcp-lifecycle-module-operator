@@ -1,23 +1,29 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "github>red-hat-data-services/konflux-central//renovate/default-renovate.json5",
     "security:only-security-updates"
   ],
-  "baseBranches": ["rhoai-3.5", "rhoai-3.6"],
-  "enabledManagers": ["dockerfile", "gomod", "rpm", "rpm-lockfile"],
+  "baseBranchPatterns": ["rhoai-3.5", "rhoai-3.6"],
+  "enabledManagers": ["dockerfile", "gomod"],
+  "dockerfile": {
+    "includePaths": ["Dockerfile.konflux"],
+    "pinDigests": true
+  },
+  "lockFileMaintenance": {
+    "enabled": false
+  },
   "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
     {
-      "description": "Disable all updates on main — changes come from midstream",
-      "matchBaseBranches": ["main"],
-      "enabled": false
-    },
-    {
-      "description": "Re-enable Dockerfile digest updates on rhoai release branches; security:only-security-updates disables regular updates while the Konflux preset allows digest updates only",
-      "matchBaseBranches": ["/^rhoai-/"],
+      "description": "Allow image lookups so MintMaker can identify CVE-fixing digest updates",
       "matchManagers": ["dockerfile"],
       "enabled": true
+    },
+    {
+      "description": "Suppress ordinary image updates after lookup; MintMaker vulnerability alerts force-enable CVE fixes",
+      "matchManagers": ["dockerfile"],
+      "matchJsonata": ["$exists(updateType)"],
+      "enabled": false
     }
   ]
 }
