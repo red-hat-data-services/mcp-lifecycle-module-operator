@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
-# Builder stage
+# Builder stage — UBI 10 (RHEL 10 has PQC crypto by default; no crypto-policies step)
 # -----------------------------------------------------------------------------
-FROM registry.access.redhat.com/ubi9/go-toolset@sha256:c2bd0309bf78ae317024fdfc5602a31704e0dba9572f6d4b0bd4b681033dc965 AS builder
+FROM registry.access.redhat.com/ubi10/go-toolset@sha256:e94c38ff4a099b755af60c73ac87198c613f369eb7f818d45c96fbc3f21047de AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -19,19 +19,9 @@ ENV GOEXPERIMENT=strictfipsruntime
 RUN make build GO_BUILD_ENV="GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH}"
 
 # -----------------------------------------------------------------------------
-# Crypto policy stage (throwaway – python3 stays out of the final image)
-# -----------------------------------------------------------------------------
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:4b79c93106c14ad1c234907f83441ff0e4f8d24e78426a36e159098e9f7e6fa5 AS crypto-policy
-
-RUN microdnf install -y crypto-policies-scripts && \
-    update-crypto-policies --set DEFAULT:PQ --no-reload
-
-# -----------------------------------------------------------------------------
 # Runtime stage
 # -----------------------------------------------------------------------------
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:4b79c93106c14ad1c234907f83441ff0e4f8d24e78426a36e159098e9f7e6fa5
-
-COPY --from=crypto-policy /etc/crypto-policies /etc/crypto-policies
+FROM registry.access.redhat.com/ubi10/ubi-minimal@sha256:f0c7b9ae9914fcf183e7c36fc46864903c2d2caf3af327421913ae54b3d29e94
 
 WORKDIR /
 
@@ -49,12 +39,12 @@ USER 65532:65532
 # Labels for enterprise contract
 # -----------------------------------------------------------------------------
 LABEL com.redhat.component=mcp-lifecycle-module-operator
-LABEL cpe="cpe:/a:redhat:mcp_lifecycle_operator:0.1::el9"
+LABEL cpe="cpe:/a:redhat:mcp_lifecycle_operator:0.1::el10"
 LABEL description="MCP lifecycle module operator"
 LABEL io.k8s.description="MCP lifecycle module operator"
 LABEL io.k8s.display-name="MCP lifecycle module operator"
 LABEL io.openshift.tags="openshift,mcp,operator"
-LABEL name="mcp-lifecycle-operator-beta/mcp-lifecycle-module-rhel9-operator"
+LABEL name="mcp-lifecycle-operator-beta/mcp-lifecycle-module-rhel10-operator"
 LABEL release=0.1.0
 LABEL url="https://github.com/opendatahub-io/mcp-lifecycle-module-operator"
 LABEL vendor="Red Hat, Inc."
