@@ -4,7 +4,7 @@
     "security:only-security-updates"
   ],
   "baseBranchPatterns": ["rhoai-3.5", "rhoai-3.6"],
-  "enabledManagers": ["dockerfile", "gomod"],
+  "enabledManagers": ["dockerfile", "gomod", "rpm-lockfile"],
   "dockerfile": {
     "includePaths": ["Dockerfile.konflux"],
     "pinDigests": true
@@ -24,6 +24,21 @@
       "matchManagers": ["dockerfile"],
       "matchJsonata": ["$exists(updateType)"],
       "enabled": false
+    },
+    {
+      "description": "Disable RPM updates outside releases that use RPM lockfiles",
+      "matchManagers": ["rpm-lockfile"],
+      "matchBaseBranches": ["!rhoai-3.6"],
+      "enabled": false
     }
-  ]
+  ],
+  "rpmVulnerabilityAlerts": true,
+  "rpm-lockfile": {
+    "lockFileMaintenance": {
+      "enabled": true,
+      "schedule": ["* * 31 2 *"]
+    },
+    "updateNotScheduled": false,
+    "description": "February 31 blocks routine refreshes; MintMaker clears the schedule for RPM security candidates"
+  }
 }
