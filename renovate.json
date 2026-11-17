@@ -3,6 +3,7 @@
   "extends": [
     "security:only-security-updates"
   ],
+  "commitMessagePrefix": "[{{baseBranch}}]",
   "baseBranchPatterns": ["rhoai-3.5", "rhoai-3.6"],
   "enabledManagers": ["dockerfile", "gomod", "rpm-lockfile"],
   "dockerfile": {
