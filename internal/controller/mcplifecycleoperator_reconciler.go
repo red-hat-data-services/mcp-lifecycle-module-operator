@@ -87,6 +87,12 @@ const (
 
 	distributionStandalone = "Standalone"
 
+	// certManagerCertificateCRDName is the cert-manager Certificate CRD. The
+	// operand Deployment mounts cert-manager-minted serving certificates
+	// (webhook and metrics) as required volumes, so it can only run on a cluster
+	// where cert-manager serves this API.
+	certManagerCertificateCRDName = "certificates.cert-manager.io"
+
 	// conversionCheckPageLimit bounds each page of the conversion-health LIST so
 	// the check stays cheap even with many stored MCPServer objects.
 	conversionCheckPageLimit int64 = 500
@@ -126,6 +132,11 @@ type platformConfig struct {
 // +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=mcplifecycleoperators/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// The operand's ClusterRole grants read access to these workload types for its
+// bring-your-own workload feature. The module operator applies that ClusterRole,
+// so its own ServiceAccount must hold these too (RBAC escalation prevention).
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services;serviceaccounts;namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
@@ -213,6 +224,35 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 		return r.handleRemoved(ctx, cr, cm)
 	}
 
+	// The operand Deployment mounts cert-manager-minted serving certificates
+	// (webhook and metrics) as required volumes, so it cannot become ready on a
+	// cluster where the cert-manager Certificate API is absent. Check for the CRD
+	// up front - before any TLS resolution or manifest rendering - so no expensive
+	// work runs while cert-manager is missing. This guards against cert-manager not
+	// being installed; CRD presence only means the API is registered, not that
+	// cert-manager is healthy or able to issue certificates. The
+	// CustomResourceDefinition watch re-triggers this reconcile once the CRD
+	// appears, so the operand recovers automatically without manual intervention.
+	certManagerAvailable, err := r.crdAvailable(ctx, certManagerCertificateCRDName)
+	if err != nil {
+		cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
+			"CertManagerCheckFailed", fmt.Sprintf("Failed to check cert-manager availability: %v", err))
+		cm.AggregateReady()
+
+		return ctrl.Result{}, fmt.Errorf("checking cert-manager CRD availability: %w", err)
+	}
+	if !certManagerAvailable {
+		log.Info("cert-manager is not installed, deferring operand deployment")
+		cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
+			"CertManagerNotInstalled",
+			"cert-manager is not installed: the operand requires cert-manager (certificates.cert-manager.io) "+
+				"to mint its webhook and metrics serving certificates. Install cert-manager; the operand will "+
+				"deploy automatically once it is available.")
+		cm.AggregateReady()
+
+		return ctrl.Result{RequeueAfter: defaultRequeueDelay}, nil
+	}
+
 	gateways, err := r.discoverMCPGateways(ctx)
 	if err != nil {
 		log.Error(err, "Failed to discover MCP gateways, preserving prior status")
@@ -222,7 +262,7 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 
 	r.tryRegisterGatewayWatches(ctx)
 
-	tlsMinVersion, tlsCipherSuites, tlsGroups, err := fetchTLSConfig(ctx, r.Client)
+	tlsConfig, err := ResolveTLSConfig(ctx, r.Client)
 	if err != nil {
 		cm.MarkFalse(v1alpha1.ConditionMCPLifecycleOperatorAvailable,
 			"TLSConfigFetchFailed", fmt.Sprintf("Failed to fetch TLS config: %v", err))
@@ -230,6 +270,9 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 
 		return ctrl.Result{}, fmt.Errorf("fetching TLS config: %w", err)
 	}
+	tlsMinVersion := tlsConfig.MinVersion
+	tlsCipherSuites := tlsConfig.CipherSuites
+	tlsGroups := tlsConfig.Groups
 
 	log.V(1).Info("TLS configuration resolved", "minVersion", tlsMinVersion, "groups", tlsGroups)
 
@@ -270,6 +313,9 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 	}
 
 	if result, ready := r.checkDeploymentsReady(ctx, desired, cm); !ready {
+		if tlsConfig.UsedTransientFallback && result.RequeueAfter == 0 {
+			result.RequeueAfter = defaultRequeueDelay
+		}
 		return result, nil
 	}
 
@@ -309,7 +355,11 @@ func (r *MCPLifecycleOperatorReconciler) reconcile(ctx context.Context, cr *v1al
 	// never returns an error, so a pending/running/failed migration never
 	// degrades Ready/Degraded. It returns a requeue while the migration is in
 	// progress and zero once it has succeeded.
-	return r.reconcileStorageMigration(ctx, cr, cm), nil
+	result := r.reconcileStorageMigration(ctx, cr, cm)
+	if tlsConfig.UsedTransientFallback && result.RequeueAfter == 0 {
+		result.RequeueAfter = defaultRequeueDelay
+	}
+	return result, nil
 }
 
 // updateBaseStatus is deferred in every reconcile to ensure observedGeneration,
@@ -559,6 +609,19 @@ func (r *MCPLifecycleOperatorReconciler) checkConversionHealth(ctx context.Conte
 	return ctrl.Result{}, true
 }
 
+// isNotRegisteredError reports whether the error chain contains a
+// runtime.IsNotRegisteredError, which the dynamic client surfaces for kinds
+// absent from the server's scheme.
+func isNotRegisteredError(err error) bool {
+	for err != nil {
+		if runtime.IsNotRegisteredError(err) {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
+
 func findDeploymentNames(resources []unstructured.Unstructured) []types.NamespacedName {
 	var names []types.NamespacedName
 	for i := range resources {
@@ -684,6 +747,15 @@ func (r *MCPLifecycleOperatorReconciler) patchStatus(ctx context.Context, orig, 
 	return r.Status().Patch(ctx, updated, patch)
 }
 
+// isWatchedCRD reports whether a CustomResourceDefinition name is one the
+// controller watches to re-trigger reconciliation: the gateway CRDs plus the
+// cert-manager Certificate CRD that gates operand deployment.
+func isWatchedCRD(name string) bool {
+	return name == mcpGatewayExtensionCRDName ||
+		name == gatewayCRDName ||
+		name == certManagerCertificateCRDName
+}
+
 // SetupWithManager registers the controller with the manager.
 func (r *MCPLifecycleOperatorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.enqueueComponentCR = handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
@@ -700,9 +772,8 @@ func (r *MCPLifecycleOperatorReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return obj.GetName() == platformConfigName && obj.GetNamespace() == r.PodNamespace
 	})
 
-	gatewayCRDPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		name := obj.GetName()
-		return name == "mcpgatewayextensions.mcp.kuadrant.io" || name == "gateways.gateway.networking.k8s.io"
+	crdWatchPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		return isWatchedCRD(obj.GetName())
 	})
 
 	b := ctrl.NewControllerManagedBy(mgr).
@@ -715,7 +786,7 @@ func (r *MCPLifecycleOperatorReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		Watches(&rbacv1.ClusterRoleBinding{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
 		Watches(&rbacv1.Role{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
 		Watches(&rbacv1.RoleBinding{}, r.enqueueComponentCR, builder.WithPredicates(managedPredicate)).
-		Watches(&extv1.CustomResourceDefinition{}, r.enqueueComponentCR, builder.WithPredicates(predicate.Or(managedPredicate, gatewayCRDPredicate)))
+		Watches(&extv1.CustomResourceDefinition{}, r.enqueueComponentCR, builder.WithPredicates(predicate.Or(managedPredicate, crdWatchPredicate)))
 
 	if isOpenShiftCluster(mgr) {
 		b = b.Watches(&configv1.APIServer{}, r.enqueueComponentCR)

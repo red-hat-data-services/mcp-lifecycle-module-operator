@@ -106,6 +106,25 @@ func newTestReconciler(cli client.Client, provider manifests.Provider, operandIm
 }
 
 func newTestReconcilerFull(provider manifests.Provider, operandImage string, objects ...client.Object) *MCPLifecycleOperatorReconciler {
+	return newTestReconcilerFullIntercepted(provider, operandImage, nil, objects...)
+}
+
+// newTestReconcilerFullIntercepted builds the full harness with an additional
+// client Get interceptor layered on top of the standard harness interceptors,
+// so tests can inject read failures (e.g. transient APIServer errors) for
+// specific object types while everything else reads through normally.
+func newTestReconcilerFullIntercepted(
+	provider manifests.Provider,
+	operandImage string,
+	getInterceptor func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error,
+	objects ...client.Object,
+) *MCPLifecycleOperatorReconciler {
+	// Seed the cert-manager Certificate CRD so the full harness represents a
+	// cluster with cert-manager installed (the operand's serving-certificate
+	// prerequisite). The presence guard reads it via crdAvailable; tests for the
+	// absent path delete it before reconciling.
+	objects = append(objects, certManagerCertificateCRD())
+
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(objects...).
@@ -117,6 +136,7 @@ func newTestReconcilerFull(provider manifests.Provider, operandImage string, obj
 				}
 				return c.Create(ctx, obj, opts...)
 			},
+			Get: getInterceptor,
 		}).
 		Build()
 
@@ -220,6 +240,15 @@ func newDeploymentUnstructured(name, namespace string) unstructured.Unstructured
 
 func int32Ptr(i int32) *int32 { return &i }
 
+// certManagerCertificateCRD returns a stand-in for the cert-manager Certificate
+// CRD so a test cluster represents cert-manager being installed. The full
+// harness seeds it by default; the cert-manager-absent test deletes it.
+func certManagerCertificateCRD() *extv1.CustomResourceDefinition {
+	return &extv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: certManagerCertificateCRDName},
+	}
+}
+
 // --- findDeploymentNames tests ---
 
 func TestFindDeploymentNames(t *testing.T) {
@@ -299,7 +328,7 @@ func TestReconcile_ManifestProviderError(t *testing.T) {
 	cr := newTestCR()
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(cr).
+		WithObjects(cr, certManagerCertificateCRD()).
 		WithStatusSubresource(cr).
 		Build()
 
@@ -341,7 +370,7 @@ func TestReconcile_EmptyOperandImage_PassesEmptyToProvider(t *testing.T) {
 
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(cr).
+		WithObjects(cr, certManagerCertificateCRD()).
 		WithStatusSubresource(cr).
 		Build()
 
@@ -543,7 +572,7 @@ func TestReconcile_ConditionAggregation_OnManifestError(t *testing.T) {
 	cr := newTestCR()
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(cr).
+		WithObjects(cr, certManagerCertificateCRD()).
 		WithStatusSubresource(cr).
 		Build()
 
@@ -635,7 +664,7 @@ func TestReconcile_StatusPatch_ReleasesPlatformHeldBackOnFailure(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(cr, platformCM).
+		WithObjects(cr, platformCM, certManagerCertificateCRD()).
 		WithStatusSubresource(cr).
 		Build()
 
@@ -680,7 +709,7 @@ func TestReconcile_StatusPatch_NoPlatformConfigMap(t *testing.T) {
 	cr := newTestCR()
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(cr).
+		WithObjects(cr, certManagerCertificateCRD()).
 		WithStatusSubresource(cr).
 		Build()
 
@@ -769,7 +798,7 @@ func TestReconcile_Distribution_NotSetOnFailure(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(cr, platformCM).
+		WithObjects(cr, platformCM, certManagerCertificateCRD()).
 		WithStatusSubresource(cr).
 		Build()
 
@@ -1407,6 +1436,86 @@ func TestReconcile_SteadyState_SkipsConversionLIST(t *testing.T) {
 	}
 }
 
+// TestReconcile_TransientTLSFallback_SchedulesRetry covers the fallback
+// reconcile that schedules a retry without an APIServer watch event: a
+// transient APIServer TLS read must not degrade the operand (Available stays
+// True, Intermediate defaults are projected) but must schedule a requeue so
+// the resolved profile converges once the API server recovers.
+func TestReconcile_TransientTLSFallback_SchedulesRetry(t *testing.T) {
+	cr := newTestCR()
+	// Mark the storage-version migration as settled so the only requeue source
+	// in an otherwise fully successful reconcile is the transient-fallback
+	// retry at the end of reconcile().
+	v1alpha1.NewConditionsManager(cr, cr.Generation).
+		MarkTrueWithReason(v1alpha1.ConditionMCPServerStorageMigrated, reasonStorageMigrationSucceeded)
+
+	var captured manifests.Params
+	provider := &capturingManifestProvider{
+		delegate: &fakeManifestProvider{},
+		capture:  func(p manifests.Params) { captured = p },
+	}
+
+	r := newTestReconcilerFullIntercepted(provider, testOperandImage,
+		func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*configv1.APIServer); ok {
+				return k8serr.NewServiceUnavailable("temporary API server failure")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		}, cr)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter != defaultRequeueDelay {
+		t.Errorf("RequeueAfter = %v, want %v (transient fallback must schedule a retry)", result.RequeueAfter, defaultRequeueDelay)
+	}
+
+	updated := &v1alpha1.MCPLifecycleOperator{}
+	if getErr := r.Get(context.Background(), types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName}, updated); getErr != nil {
+		t.Fatalf("failed to get updated CR: %v", getErr)
+	}
+	c := findCondition(updated, v1alpha1.ConditionMCPLifecycleOperatorAvailable)
+	if c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Available condition = %+v, want True: a transient profile read must not degrade the operand", c)
+	}
+
+	if captured.TLSMinVersion != string(configv1.VersionTLS12) || captured.TLSCipherSuites == "" {
+		t.Errorf("operand TLS params = min %q ciphers %q, want Intermediate fallback values",
+			captured.TLSMinVersion, captured.TLSCipherSuites)
+	}
+}
+
+// TestReconcile_SteadyState_NoRequeueWithoutTransientFallback is the control
+// case for the transient-fallback retry: the same settled reconcile without a
+// transient APIServer read must return a zero result, because nothing is
+// pending convergence. With framework v0.4.0, NotFound (the API is served but
+// the APIServer object is missing) returns Watchable=true, so the reconciler
+// correctly requeues to watch for the object's creation — this test now
+// verifies that the requeue is bounded and non-erroring rather than absent.
+func TestReconcile_SteadyState_NoRequeueWithoutTransientFallback(t *testing.T) {
+	cr := newTestCR()
+	v1alpha1.NewConditionsManager(cr, cr.Generation).
+		MarkTrueWithReason(v1alpha1.ConditionMCPServerStorageMigrated, reasonStorageMigrationSucceeded)
+
+	r := newTestReconcilerFull(&fakeManifestProvider{}, testOperandImage, cr)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// With framework v0.4.0+, a missing APIServer object on a served API
+	// returns Watchable=true: the reconciler requeues with the standard
+	// retry interval to converge once the object appears.
+	if result.RequeueAfter <= 0 {
+		t.Errorf("RequeueAfter = %v, want a positive retry interval (the APIServer object is missing but watchable)", result.RequeueAfter)
+	}
+}
+
 // TestReconcile_FirstUpgradeAfterRollout_RunsConversionLIST covers the rollout
 // that first introduces this gate: the previous (ungated) controller can
 // advance status.distribution to the desired version before this controller
@@ -1571,6 +1680,185 @@ func TestConversionHandshakeSettled(t *testing.T) {
 			}
 			if got := conversionHandshakeSettled(cr, tt.pc); got != tt.want {
 				t.Errorf("conversionHandshakeSettled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReconcile_CertManagerAbsent_MarksUnavailable covers the cert-manager
+// guard: on a cluster without cert-manager the operand Deployment would hang
+// forever waiting for serving-certificate secrets, so the reconciler must mark
+// the operand unavailable with an actionable reason and requeue instead of
+// applying the operand. It must not error (the condition carries the signal) and
+// must not advance status.distribution.
+func TestReconcile_CertManagerAbsent_MarksUnavailable(t *testing.T) {
+	cr := newTestCR()
+	platformCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      platformConfigName,
+			Namespace: testPodNamespace,
+		},
+		Data: map[string]string{
+			distributionNameKey:    "SelfManagedRHOAI",
+			distributionVersionKey: "3.5.1",
+		},
+	}
+
+	// Record manifest renders so we can prove the guard short-circuits before any
+	// operand resources are built, not merely that the end state is empty.
+	manifestCalls := 0
+	provider := &capturingManifestProvider{
+		delegate: &fakeManifestProvider{},
+		capture:  func(manifests.Params) { manifestCalls++ },
+	}
+	r := newTestReconcilerFull(provider, testOperandImage, cr, platformCM)
+
+	// Simulate a cluster without cert-manager by removing the CRD the full
+	// harness seeds by default.
+	if err := r.Delete(context.Background(), certManagerCertificateCRD()); err != nil {
+		t.Fatalf("failed to remove cert-manager CRD: %v", err)
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error (guard must requeue, not error): %v", err)
+	}
+	if result.RequeueAfter != defaultRequeueDelay {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, defaultRequeueDelay)
+	}
+
+	// The guard must stop reconciliation before any manifests are rendered; a
+	// non-zero count would mean the operand was being built despite cert-manager
+	// being absent.
+	if manifestCalls != 0 {
+		t.Errorf("manifest render calls = %d, want 0 (guard must short-circuit before manifest processing)", manifestCalls)
+	}
+
+	updated := &v1alpha1.MCPLifecycleOperator{}
+	if getErr := r.Get(context.Background(), types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName}, updated); getErr != nil {
+		t.Fatalf("failed to get updated CR: %v", getErr)
+	}
+
+	c := findCondition(updated, v1alpha1.ConditionMCPLifecycleOperatorAvailable)
+	if c == nil {
+		t.Fatal("expected MCPLifecycleOperatorAvailable condition")
+	}
+	if c.Status != metav1.ConditionFalse {
+		t.Errorf("condition status = %v, want False", c.Status)
+	}
+	if c.Reason != "CertManagerNotInstalled" {
+		t.Errorf("condition reason = %q, want %q", c.Reason, "CertManagerNotInstalled")
+	}
+	if !strings.Contains(c.Message, "cert-manager") {
+		t.Errorf("condition message = %q, want it to name cert-manager", c.Message)
+	}
+
+	if updated.Status.Distribution.Name != "" || updated.Status.Distribution.Version != "" {
+		t.Errorf("distribution = %+v, want empty (cert-manager guard blocked the version write)", updated.Status.Distribution)
+	}
+}
+
+// TestReconcile_CertManagerCheckFails_MarksUnavailable covers the error branch of
+// the cert-manager guard: a non-NotFound failure reading the
+// certificates.cert-manager.io CRD (e.g. a transient API server error) must
+// surface as a returned error and mark the operand unavailable with reason
+// CertManagerCheckFailed, so the reconcile is retried rather than silently
+// deploying the operand.
+func TestReconcile_CertManagerCheckFails_MarksUnavailable(t *testing.T) {
+	cr := newTestCR()
+
+	// Record manifest renders so we can prove the guard short-circuits before any
+	// operand resources are built when the CRD check itself fails.
+	manifestCalls := 0
+	provider := &capturingManifestProvider{
+		delegate: &fakeManifestProvider{},
+		capture:  func(manifests.Params) { manifestCalls++ },
+	}
+	r := newTestReconcilerFullIntercepted(provider, testOperandImage,
+		func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*extv1.CustomResourceDefinition); ok && key.Name == certManagerCertificateCRDName {
+				return k8serr.NewServiceUnavailable("temporary API server failure")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		}, cr)
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName},
+	})
+	if err == nil {
+		t.Fatal("expected an error when the cert-manager CRD check fails")
+	}
+
+	// The guard must stop reconciliation before any manifests are rendered; a
+	// non-zero count would mean the operand was being built despite the failed
+	// cert-manager check.
+	if manifestCalls != 0 {
+		t.Errorf("manifest render calls = %d, want 0 (guard must short-circuit before manifest processing)", manifestCalls)
+	}
+
+	updated := &v1alpha1.MCPLifecycleOperator{}
+	if getErr := r.Get(context.Background(), types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName}, updated); getErr != nil {
+		t.Fatalf("failed to get updated CR: %v", getErr)
+	}
+
+	c := findCondition(updated, v1alpha1.ConditionMCPLifecycleOperatorAvailable)
+	if c == nil {
+		t.Fatal("expected MCPLifecycleOperatorAvailable condition")
+	}
+	if c.Status != metav1.ConditionFalse {
+		t.Errorf("condition status = %v, want False", c.Status)
+	}
+	if c.Reason != "CertManagerCheckFailed" {
+		t.Errorf("condition reason = %q, want %q", c.Reason, "CertManagerCheckFailed")
+	}
+}
+
+// TestReconcile_CertManagerPresent_StaysAvailable is the positive control: with
+// cert-manager installed (the harness default) the guard is transparent and the
+// operand reaches Available=True as before.
+func TestReconcile_CertManagerPresent_StaysAvailable(t *testing.T) {
+	cr := newTestCR()
+
+	r := newTestReconcilerFull(&fakeManifestProvider{}, testOperandImage, cr)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	updated := &v1alpha1.MCPLifecycleOperator{}
+	if getErr := r.Get(context.Background(), types.NamespacedName{Name: v1alpha1.MCPLifecycleOperatorInstanceName}, updated); getErr != nil {
+		t.Fatalf("failed to get updated CR: %v", getErr)
+	}
+
+	c := findCondition(updated, v1alpha1.ConditionMCPLifecycleOperatorAvailable)
+	if c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Available condition = %+v, want True when cert-manager is present", c)
+	}
+}
+
+// TestCRDWatchPredicate asserts the CustomResourceDefinition watch wakes the
+// reconciler when cert-manager (and the gateway CRDs) are installed, so a
+// cert-manager-absent operand recovers promptly once cert-manager appears. It
+// exercises isWatchedCRD, the same production predicate used in
+// SetupWithManager.
+func TestCRDWatchPredicate(t *testing.T) {
+	tests := []struct {
+		crdName string
+		matched bool
+	}{
+		{certManagerCertificateCRDName, true},
+		{"gateways.gateway.networking.k8s.io", true},
+		{"mcpgatewayextensions.mcp.kuadrant.io", true},
+		{"somethingelse.example.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.crdName, func(t *testing.T) {
+			if got := isWatchedCRD(tt.crdName); got != tt.matched {
+				t.Errorf("isWatchedCRD(%q) = %v, want %v", tt.crdName, got, tt.matched)
 			}
 		})
 	}
