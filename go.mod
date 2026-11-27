@@ -1,6 +1,6 @@
 module github.com/opendatahub-io/mcp-lifecycle-module-operator
 
-go 1.26.10
+go 1.27.0
 
 require (
 	github.com/go-logr/logr v1.4.4
