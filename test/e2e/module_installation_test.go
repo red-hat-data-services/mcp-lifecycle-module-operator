@@ -78,7 +78,7 @@ func TestE2EInstallationWebhookFailClosed(t *testing.T) {
 		g.Expect(webhook.Rules).To(ContainElement(SatisfyAll(
 			HaveField("Operations", ContainElement(admissionv1.Create)),
 			HaveField("APIGroups", ContainElement("mcp.x-k8s.io")),
-			HaveField("APIVersions", ContainElement("v1alpha1")),
+			HaveField("APIVersions", ContainElement("v1")),
 			HaveField("Resources", ContainElement("mcpservers")),
 			HaveField("Scope", Or(BeNil(), HaveValue(BeElementOf(admissionv1.AllScopes, admissionv1.NamespacedScope)))),
 		)))

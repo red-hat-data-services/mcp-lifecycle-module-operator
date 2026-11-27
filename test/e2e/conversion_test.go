@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// TestE2EConversionRoundTrip verifies a v1alpha1-created MCPServer is served at both versions via the conversion webhook.
+// TestE2EConversionRoundTrip verifies a v1beta1-created MCPServer is served at both versions via the conversion webhook.
 func TestE2EConversionRoundTrip(t *testing.T) {
 	prepareTest(t)
 	g := NewWithT(t)
@@ -49,9 +49,9 @@ func TestE2EConversionRoundTrip(t *testing.T) {
 		g.Expect(crd.Spec.Conversion.Strategy).To(Equal(extv1.WebhookConverter))
 	}, timeout, interval).Should(Succeed())
 
-	t.Log("Creating an MCPServer at mcp.x-k8s.io/v1alpha1 (up-converts on write)")
-	alpha := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "mcp.x-k8s.io/v1alpha1",
+	t.Log("Creating an MCPServer at mcp.x-k8s.io/v1beta1 (up-converts on write)")
+	betaObj := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "mcp.x-k8s.io/v1beta1",
 		"kind":       "MCPServer",
 		"metadata": map[string]interface{}{
 			"name":      serverName,
@@ -70,24 +70,24 @@ func TestE2EConversionRoundTrip(t *testing.T) {
 	// Create that persisted server-side but returned a transient client error
 	// does not wedge the retry loop until timeout.
 	g.Eventually(func(g Gomega) {
-		err := k8sClient.Create(ctx, alpha.DeepCopy())
+		err := k8sClient.Create(ctx, betaObj.DeepCopy())
 		if k8serr.IsAlreadyExists(err) {
 			return
 		}
 		g.Expect(err).NotTo(HaveOccurred())
 	}, timeout, interval).Should(Succeed())
 
-	t.Log("Reading it back at mcp.x-k8s.io/v1beta1 (the stored version)")
-	beta := &unstructured.Unstructured{}
-	beta.SetGroupVersionKind(schema.GroupVersionKind{Group: "mcp.x-k8s.io", Version: "v1beta1", Kind: "MCPServer"})
+	t.Log("Reading it back at mcp.x-k8s.io/v1 (the stored version)")
+	v1obj := &unstructured.Unstructured{}
+	v1obj.SetGroupVersionKind(schema.GroupVersionKind{Group: "mcp.x-k8s.io", Version: "v1", Kind: "MCPServer"})
 	g.Eventually(func(g Gomega) {
-		g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: fixtureNamespace, Name: serverName}, beta)).To(Succeed())
-		expectMCPServerSpec(g, beta, serverPort)
+		g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: fixtureNamespace, Name: serverName}, v1obj)).To(Succeed())
+		expectMCPServerSpec(g, v1obj, serverPort)
 	}, timeout, interval).Should(Succeed())
 
-	t.Log("Reading it back at mcp.x-k8s.io/v1alpha1 (down-converts on read)")
+	t.Log("Reading it back at mcp.x-k8s.io/v1beta1 (down-converts on read)")
 	roundTrip := &unstructured.Unstructured{}
-	roundTrip.SetGroupVersionKind(schema.GroupVersionKind{Group: "mcp.x-k8s.io", Version: "v1alpha1", Kind: "MCPServer"})
+	roundTrip.SetGroupVersionKind(schema.GroupVersionKind{Group: "mcp.x-k8s.io", Version: "v1beta1", Kind: "MCPServer"})
 	g.Eventually(func(g Gomega) {
 		g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: fixtureNamespace, Name: serverName}, roundTrip)).To(Succeed())
 		expectMCPServerSpec(g, roundTrip, serverPort)
