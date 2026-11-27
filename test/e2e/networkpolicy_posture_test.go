@@ -216,7 +216,7 @@ func conditionStatus(conditions []interface{}, condType string) string {
 	return ""
 }
 
-// newMCPServer builds a minimal v1alpha1 MCPServer. When ingressFrom is non-nil
+// newMCPServer builds a minimal v1 MCPServer. When ingressFrom is non-nil
 // it is set at spec.network.ingressFrom; otherwise no network section is added,
 // which exercises the restricted deny-by-default path.
 func newMCPServer(namespace, name string, ingressFrom []interface{}) *unstructured.Unstructured {
@@ -234,7 +234,7 @@ func newMCPServer(namespace, name string, ingressFrom []interface{}) *unstructur
 	}
 
 	return &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "mcp.x-k8s.io/v1alpha1",
+		"apiVersion": "mcp.x-k8s.io/v1",
 		"kind":       "MCPServer",
 		"metadata": map[string]interface{}{
 			"name":      name,
